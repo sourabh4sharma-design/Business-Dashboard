@@ -5,17 +5,23 @@ plain HTML/CSS/JS, hosted on GitHub Pages.
 
 ## How it works
 
-- Data is pulled directly from the Google Sheet on every page load, via each
-  tab's public CSV export URL (`SHEET_ID` + tab name in `app.js`).
-- The sheet must stay shared as **"Anyone with the link – Viewer"** or the
-  dashboard can't read it.
-- Editing the sheet updates the dashboard automatically — no code changes or
-  redeploys needed. Just click **Refresh** on the page (or reload it).
+The source Google Sheet is private. A scheduled GitHub Action
+(`.github/workflows/refresh-data.yml`) runs every 15 minutes (and can be
+triggered manually from the repo's **Actions** tab), authenticates as a
+Google service account, and writes each tab's data to `data/<slug>.json`.
+The static page (`app.js`) only ever reads those committed JSON files — it
+never talks to Google directly, so the sheet's privacy is preserved.
+
+Requirements for this to keep working:
+- The service account (its email is inside the JSON key file) must remain
+  shared as a **Viewer** on the sheet.
+- The `GCP_SERVICE_ACCOUNT_JSON` repo secret (Settings → Secrets and
+  variables → Actions) must stay set to that service account's key.
 
 ## Updating the tab list
 
 If tabs are renamed, added, or removed in the sheet, update the `TABS` array
-at the top of `app.js` to match.
+in `app.js` **and** the `TABS` list in `scripts/fetch_data.py` to match.
 
 ## Local preview
 

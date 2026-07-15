@@ -1,17 +1,17 @@
 // ---- Configuration -----------------------------------------------------
-// Google Sheet ID (from the sheet's URL). Tabs are pulled live by name via
-// the gviz CSV export endpoint, so any edits in the sheet show up on refresh.
-const SHEET_ID = "1_pjZJw6Y3Z6GibdmuQOwzaAazWme-HD26MiBCR16Rfs";
-
+// The sheet is private, so a scheduled GitHub Action (see
+// .github/workflows/refresh-data.yml) fetches it server-side using a
+// Google service account and commits the result into data/*.json. This
+// page just reads those committed files — never talks to Google directly.
 const TABS = [
-  { label: "Summary", sheetName: "Summary", type: "summary" },
-  { label: "D2C & Auto POD", sheetName: "D2C & Auto POD", type: "pod" },
-  { label: "Govt + Telco", sheetName: "Govt + Telco", type: "pod" },
-  { label: "CDIT+BFSI POD", sheetName: "CDIT+BFSI POD", type: "pod" },
-  { label: "FMCG North POD", sheetName: "FMCG North POD", type: "pod" },
-  { label: "FMCG - South POD", sheetName: "FMCG - South POD", type: "pod" },
-  { label: "FMCG West POD", sheetName: "FMCG West POD", type: "pod" },
-  { label: "Gaming POD", sheetName: "Gaming POD", type: "pod" },
+  { label: "Summary", slug: "summary", type: "summary" },
+  { label: "D2C & Auto POD", slug: "d2c-auto", type: "pod" },
+  { label: "Govt + Telco", slug: "govt-telco", type: "pod" },
+  { label: "CDIT+BFSI POD", slug: "cdit-bfsi", type: "pod" },
+  { label: "FMCG North POD", slug: "fmcg-north", type: "pod" },
+  { label: "FMCG - South POD", slug: "fmcg-south", type: "pod" },
+  { label: "FMCG West POD", slug: "fmcg-west", type: "pod" },
+  { label: "Gaming POD", slug: "gaming", type: "pod" },
 ];
 
 // ---- State ---------------------------------------------------------------
@@ -22,11 +22,6 @@ let sortCol = null;
 let sortDir = 1;
 
 // ---- Helpers ---------------------------------------------------------------
-function sheetCsvUrl(sheetName) {
-  const encoded = encodeURIComponent(sheetName);
-  return `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encoded}&_=${Date.now()}`;
-}
-
 function parseNumber(val) {
   if (val === null || val === undefined) return null;
   const s = String(val).trim();
@@ -51,14 +46,16 @@ function findColumnName(columns, keyword) {
   return columns.find((c) => c.toLowerCase().includes(kw));
 }
 
-function fetchCsvRows(sheetName) {
-  return new Promise((resolve, reject) => {
-    Papa.parse(sheetCsvUrl(sheetName), {
-      download: true,
-      complete: (results) => resolve(results.data),
-      error: (err) => reject(err),
-    });
-  });
+async function fetchJsonRows(slug) {
+  const res = await fetch(`data/${slug}.json?_=${Date.now()}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error(
+      `data/${slug}.json not found yet (HTTP ${res.status}). The scheduled Action may not have run yet — ` +
+      `you can trigger it manually from the repo's Actions tab.`
+    );
+  }
+  const body = await res.json();
+  return body.values || [];
 }
 
 // ---- Rendering: tabs -----------------------------------------------------
@@ -277,16 +274,14 @@ async function loadCurrentTab() {
   loadingEl.textContent = `Loading “${tab.label}”…`;
 
   try {
-    const rows = await fetchCsvRows(tab.sheetName);
+    const rows = await fetchJsonRows(tab.slug);
     if (tab.type === "summary") renderSummary(rows);
     else renderPod(rows);
-    document.getElementById("lastUpdated").textContent = "Updated " + new Date().toLocaleTimeString();
+    document.getElementById("lastUpdated").textContent = "Data refreshed on a schedule — page loaded " + new Date().toLocaleTimeString();
   } catch (err) {
     console.error(err);
     errorEl.style.display = "block";
-    errorEl.textContent =
-      "Couldn't load this tab. Make sure the Google Sheet is shared as \"Anyone with the link – Viewer\".\n\n" +
-      (err && err.message ? err.message : err);
+    errorEl.textContent = "Couldn't load this tab.\n\n" + (err && err.message ? err.message : err);
   } finally {
     loadingEl.style.display = "none";
   }
