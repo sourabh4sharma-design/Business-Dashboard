@@ -5,7 +5,7 @@
 // would hit the paytm.com Google sign-in wall instead of returning JSON.
 // Only works for viewers signed into a paytm.com Google account in-browser.
 const APPS_SCRIPT_URL =
-  "https://script.google.com/a/macros/paytm.com/s/AKfycbw_cHycuxQGlm5G2VWC7vLg-OpdXxthF1m0B3ixELS5b4lFZjOWKAeAaYWWJxm8N2D1/exec";
+  "https://script.google.com/a/macros/paytm.com/s/AKfycbx9lMG4oCmvDNVCUeDY8JdALLsMK5e4iV5Wcv4GqwebvJXfpRsojJeHvcBX_p3qmUpO/exec";
 const APPS_SCRIPT_KEY = "eFZYQGevyYbeiRxswugbkF7YI4BLAcN3";
 const REFRESH_INTERVAL_MS = 7000;
 
