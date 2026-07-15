@@ -1,46 +1,76 @@
-// ---- Configuration -----------------------------------------------------
-// The sheet is private and domain-restricted to paytm.com. Data is fetched
-// live, on a short interval, straight from an Apps Script web app deployed
-// inside that sheet (Execute as: Me) — via JSONP, since a plain fetch()
-// would hit the paytm.com Google sign-in wall instead of returning JSON.
-// Only works for viewers signed into a paytm.com Google account in-browser.
+// ============================================================
+// Collections Dashboard
+// Private, paytm.com-restricted Google Sheet → Apps Script (JSONP).
+// Two views: Overview (Summary tab, many tables) and POD Details
+// (one POD sheet at a time, chosen from a dropdown). Auto-refreshes
+// in place every REFRESH_INTERVAL_MS, only touching the DOM when the
+// underlying data actually changed.
+// ============================================================
 const APPS_SCRIPT_URL =
   "https://script.google.com/a/macros/paytm.com/s/AKfycbx9lMG4oCmvDNVCUeDY8JdALLsMK5e4iV5Wcv4GqwebvJXfpRsojJeHvcBX_p3qmUpO/exec";
 const APPS_SCRIPT_KEY = "eFZYQGevyYbeiRxswugbkF7YI4BLAcN3";
 const REFRESH_INTERVAL_MS = 7000;
 
-const TABS = [
-  { label: "Summary", sheetName: "Summary", type: "summary" },
-  { label: "D2C & Auto POD", sheetName: "D2C & Auto POD", type: "pod" },
-  { label: "Govt + Telco", sheetName: "Govt + Telco", type: "pod" },
-  { label: "CDIT+BFSI POD", sheetName: "CDIT+BFSI POD", type: "pod" },
-  { label: "FMCG North POD", sheetName: "FMCG North POD", type: "pod" },
-  { label: "FMCG - South POD", sheetName: "FMCG - South POD", type: "pod" },
-  { label: "FMCG West POD", sheetName: "FMCG West POD", type: "pod" },
-  { label: "Gaming POD", sheetName: "Gaming POD", type: "pod" },
+const SUMMARY_SHEET = "Summary";
+const PODS = [
+  { label: "D2C & Auto", sheetName: "D2C & Auto POD" },
+  { label: "Govt + Telco", sheetName: "Govt + Telco" },
+  { label: "CDIT + BFSI", sheetName: "CDIT+BFSI POD" },
+  { label: "FMCG North", sheetName: "FMCG North POD" },
+  { label: "FMCG South", sheetName: "FMCG - South POD" },
+  { label: "FMCG West", sheetName: "FMCG West POD" },
+  { label: "Gaming", sheetName: "Gaming POD" },
 ];
 
 // ---- State ---------------------------------------------------------------
-let currentTabIndex = 0;
+let currentView = "overview"; // "overview" | "pod"
+let currentPodIndex = 0;
 let podRows = [];
 let podColumns = [];
 let sortCol = null;
 let sortDir = 1;
-let lastRawByTab = {}; // sheetName -> JSON snapshot, to skip no-op refreshes
+let lastSnapshotByKey = {};
+let lastPodRenderKey = null;
 
-// ---- Helpers ---------------------------------------------------------------
+// ---- Number helpers ------------------------------------------------------
 function parseNumber(val) {
   if (val === null || val === undefined) return null;
   const s = String(val).trim();
-  if (s === "" || s === "#N/A" || s === "N/A") return null;
-  const cleaned = s.replace(/,/g, "");
-  const n = Number(cleaned);
+  if (s === "" || s === "#N/A" || s === "N/A" || s === "#DIV/0!") return null;
+  const n = Number(s.replace(/,/g, ""));
   return Number.isFinite(n) ? n : null;
 }
 
-function formatNumber(n) {
-  if (n === null || n === undefined) return "—";
-  return n.toLocaleString("en-IN", { maximumFractionDigits: 0 });
+// Amount in ₹ Lakhs → readable string.
+function fmtLakh(n) {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  const a = Math.abs(n);
+  const digits = a >= 1000 ? 0 : a >= 10 ? 1 : 2;
+  return n.toLocaleString("en-IN", { maximumFractionDigits: digits });
+}
+
+// Amount in ₹ Lakhs → ₹ Crore figure string (value only).
+function fmtCrore(lakhs) {
+  if (lakhs === null || isNaN(lakhs)) return "—";
+  return (lakhs / 100).toLocaleString("en-IN", { maximumFractionDigits: 1 });
+}
+
+function fmtPercent(fraction) {
+  if (fraction === null || isNaN(fraction)) return "—";
+  return (fraction * 100).toFixed(1) + "%";
+}
+
+// Raw rupees → auto-scaled ₹ figure (Cr / L / plain).
+function fmtRupees(r) {
+  if (r === null || isNaN(r)) return "—";
+  const a = Math.abs(r);
+  if (a >= 1e7) return "₹" + (r / 1e7).toLocaleString("en-IN", { maximumFractionDigits: 1 }) + " Cr";
+  if (a >= 1e5) return "₹" + (r / 1e5).toLocaleString("en-IN", { maximumFractionDigits: 1 }) + " L";
+  return "₹" + Math.round(r).toLocaleString("en-IN");
+}
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
 function findColumnIndex(headerRow, keyword) {
@@ -48,11 +78,7 @@ function findColumnIndex(headerRow, keyword) {
   return headerRow.findIndex((h) => (h || "").toLowerCase().includes(kw));
 }
 
-function findColumnName(columns, keyword) {
-  const kw = keyword.toLowerCase();
-  return columns.find((c) => c.toLowerCase().includes(kw));
-}
-
+// ---- Data fetch (JSONP) --------------------------------------------------
 function jsonpFetch(url, params) {
   return new Promise((resolve, reject) => {
     const cbName = "jsonp_cb_" + Math.random().toString(36).slice(2);
@@ -78,7 +104,7 @@ function jsonpFetch(url, params) {
     document.body.appendChild(script);
     setTimeout(() => {
       if (!done) {
-        reject(new Error("Timed out waiting for data. Make sure you're signed into your paytm.com Google account."));
+        reject(new Error("Timed out. Make sure you're signed into your paytm.com Google account."));
         cleanup();
       }
     }, 15000);
@@ -91,143 +117,377 @@ async function fetchTabRows(sheetName) {
   return (data && data.values) || [];
 }
 
-// ---- Rendering: tabs -----------------------------------------------------
-function renderTabNav() {
-  const nav = document.getElementById("tabNav");
-  nav.innerHTML = "";
-  TABS.forEach((tab, i) => {
-    const btn = document.createElement("button");
-    btn.className = "tab-btn" + (i === currentTabIndex ? " active" : "");
-    btn.textContent = tab.label;
-    btn.addEventListener("click", () => selectTab(i));
-    nav.appendChild(btn);
+// ============================================================
+// SUMMARY PARSING
+// The Summary sheet stacks several tables. Split it into sections:
+// a section starts at a single-cell title row, may carry a subtitle
+// ("Outstanding amount…"), one header row (detected by keyword), and
+// the data rows that follow.
+// ============================================================
+const HEADER_KEYWORDS = ["3m+ overdue", "target collections", "balance-month start"];
+
+function nonEmptyCount(r) {
+  return r.filter((c) => String(c ?? "").trim() !== "").length;
+}
+function firstText(r) {
+  return String(r[0] ?? "").trim();
+}
+function joinedLower(r) {
+  return r.map((c) => String(c ?? "").toLowerCase()).join(" | ");
+}
+
+function parseSummarySections(rows) {
+  const sections = [];
+  let cur = null;
+  const flush = () => {
+    if (cur && (cur.header || cur.rows.length)) sections.push(cur);
+    cur = null;
+  };
+
+  for (const r of rows) {
+    const jl = joinedLower(r);
+    const isSubtitle = jl.includes("outstanding amount");
+    const isTitle =
+      nonEmptyCount(r) === 1 && firstText(r) !== "" && parseNumber(firstText(r)) === null && !isSubtitle;
+    const isHeader = nonEmptyCount(r) >= 3 && HEADER_KEYWORDS.some((k) => jl.includes(k));
+    const isBlank = nonEmptyCount(r) === 0;
+
+    if (isSubtitle) {
+      if (!cur) cur = { title: "", subtitle: "", header: null, rows: [] };
+      cur.subtitle = "₹ Lakhs";
+      continue;
+    }
+    if (isTitle) {
+      flush();
+      cur = { title: firstText(r), subtitle: "", header: null, rows: [] };
+      continue;
+    }
+    if (!cur) cur = { title: "", subtitle: "", header: null, rows: [] };
+    if (isHeader) {
+      cur.header = r;
+      continue;
+    }
+    if (isBlank) continue;
+    cur.rows.push(r);
+  }
+  flush();
+
+  // Disambiguate repeated titles (two "Summary - All Debtors" tables).
+  const seen = {};
+  sections.forEach((s) => {
+    if (!s.title) return;
+    if (seen[s.title]) s.title = s.title + " (grouped)";
+    else seen[s.title] = true;
   });
+  return sections;
 }
 
-async function selectTab(i) {
-  currentTabIndex = i;
-  sortCol = null;
-  sortDir = 1;
-  renderTabNav();
-  await loadCurrentTab({ background: false });
+function findSection(sections, keyword) {
+  const kw = keyword.toLowerCase();
+  return sections.find((s) => s.title.toLowerCase().includes(kw));
 }
 
-// ---- Summary tab -----------------------------------------------------------
-function renderSummary(rows) {
-  document.getElementById("podView").style.display = "none";
-  const view = document.getElementById("summaryView");
-  view.style.display = "block";
+// ============================================================
+// OVERVIEW RENDER
+// ============================================================
+function renderOverview(rows) {
+  document.getElementById("podView").hidden = true;
+  document.getElementById("overviewView").hidden = false;
 
-  const headerRowIdx = rows.findIndex((r) =>
-    r.some((c) => (c || "").toLowerCase().includes("total os"))
+  const sections = parseSummarySections(rows);
+
+  renderKpis(sections);
+  renderCategoryChart(sections);
+  renderPodChart(sections);
+  renderTargetMeters(sections);
+  renderSummaryTables(sections);
+}
+
+function renderKpis(sections) {
+  const el = document.getElementById("kpiRow");
+  const s = findSection(sections, "summary - all debtors");
+  if (!s || !s.header) {
+    el.innerHTML = "";
+    return;
+  }
+  const h = s.header;
+  const totalRow = s.rows.find((r) => /^total/i.test(firstText(r)));
+  if (!totalRow) {
+    el.innerHTML = "";
+    return;
+  }
+
+  const iMonthStart = findColumnIndex(h, "total os");
+  const iCollected = findColumnIndex(h, "collected this month");
+  const iCurrent = findColumnIndex(h, "current balance");
+
+  const monthStart = parseNumber(totalRow[iMonthStart]);
+  const collected = parseNumber(totalRow[iCollected]);
+  const current = parseNumber(totalRow[iCurrent]);
+  const overdue3m = parseNumber(totalRow[iCurrent + 1]);
+  const underCredit = parseNumber(totalRow[iCurrent + 3]);
+
+  const tiles = [];
+
+  // Total outstanding, delta vs month start (a drop is good).
+  let foot = "";
+  if (monthStart) {
+    const pct = ((current - monthStart) / monthStart) * 100;
+    const down = pct <= 0;
+    foot = `<span class="delta ${down ? "up-good" : "down-bad"}">${down ? "▼" : "▲"} ${Math.abs(pct).toFixed(1)}%</span> vs month start`;
+  }
+  tiles.push(kpiTile("Total outstanding", fmtCrore(current), "Cr", "", foot));
+
+  tiles.push(kpiTile("Collected this month", fmtCrore(collected), "Cr", "accent-good", "month to date"));
+
+  const share = current ? Math.round((overdue3m / current) * 100) : null;
+  tiles.push(
+    kpiTile("3M+ overdue", fmtCrore(overdue3m), "Cr", "accent-crit", share != null ? `${share}% of the book` : "")
   );
-  if (headerRowIdx === -1 || !rows[headerRowIdx + 1]) {
-    throw new Error("Could not find the summary table inside the 'Summary' tab.");
-  }
-  const header = rows[headerRowIdx];
-  const data = rows[headerRowIdx + 1];
 
-  const monthStartIdx = findColumnIndex(header, "total os");
-  const collectedIdx = findColumnIndex(header, "collected this month");
-  const currentIdx = findColumnIndex(header, "current balance");
+  tiles.push(kpiTile("Under credit", fmtCrore(underCredit), "Cr", "accent-warn", "not yet due"));
 
-  const sections = [
-    { key: "Total O/S – Month Start", start: monthStartIdx },
-    { key: "Collected this Month", start: collectedIdx },
-    { key: "Current Balance", start: currentIdx },
-  ].filter((s) => s.start !== -1);
+  el.innerHTML = tiles.join("");
+}
 
-  const cardsEl = document.getElementById("summaryCards");
-  let cardEls = cardsEl.querySelectorAll(".card");
-  if (cardEls.length !== sections.length) {
-    cardsEl.innerHTML = "";
-    sections.forEach(() => {
-      const card = document.createElement("div");
-      card.className = "card";
-      card.innerHTML = '<div class="label"></div><div class="value"></div>';
-      cardsEl.appendChild(card);
-    });
-    cardEls = cardsEl.querySelectorAll(".card");
-  }
-  sections.forEach((s, i) => {
-    const total = parseNumber(data[s.start]);
-    const labelEl = cardEls[i].querySelector(".label");
-    const valueEl = cardEls[i].querySelector(".value");
-    const labelText = `${s.key} (₹ Lakhs)`;
-    if (labelEl.textContent !== labelText) labelEl.textContent = labelText;
-    valueEl.textContent = formatNumber(total);
-    valueEl.className = "value" + (total < 0 ? " neg" : "");
+function kpiTile(label, value, unit, accentClass, footHtml) {
+  return `<div class="kpi ${accentClass}">
+    <div class="kpi-label">${label}</div>
+    <div class="kpi-value">₹${value}<span class="unit">${unit}</span></div>
+    <div class="kpi-foot">${footHtml || ""}</div>
+  </div>`;
+}
+
+// Extract {labels, values} of the "Current Balance" column for the
+// non-total, non-auxiliary data rows of a section.
+function balanceSeries(section) {
+  if (!section || !section.header) return { labels: [], values: [] };
+  const iCurrent = findColumnIndex(section.header, "current balance");
+  const col = iCurrent === -1 ? section.header.length - 4 : iCurrent;
+  const labels = [];
+  const values = [];
+  section.rows.forEach((r) => {
+    const label = firstText(r);
+    if (!label) return;
+    if (/^total/i.test(label)) return;
+    if (/salience|cohort|% collection/i.test(label)) return;
+    const v = parseNumber(r[col]);
+    if (v === null) return;
+    labels.push(label);
+    values.push(v);
   });
+  return { labels, values };
+}
 
-  const labels = ["3M+ Overdue", "0-3M Overdue", "Under Credit"];
-  const datasets = sections.map((s, i) => ({
-    label: s.key,
-    data: [1, 2, 3].map((offset) => parseNumber(data[s.start + offset]) ?? 0),
-    backgroundColor: ["#2563eb", "#16a34a", "#f59e0b"][i % 3],
-  }));
-
-  const ctx = document.getElementById("agingChart").getContext("2d");
-  if (window._agingChart) {
-    window._agingChart.data.labels = labels;
-    window._agingChart.data.datasets = datasets;
-    window._agingChart.update();
+function upsertChart(refKey, canvasId, config) {
+  if (window[refKey]) {
+    window[refKey].data = config.data;
+    window[refKey].options = config.options;
+    window[refKey].update();
   } else {
-    window._agingChart = new Chart(ctx, {
-      type: "bar",
-      data: { labels, datasets },
-      options: {
-        responsive: true,
-        plugins: { title: { display: true, text: "Aging buckets by section (₹ Lakhs)" } },
-        scales: { y: { beginAtZero: true } },
-      },
-    });
+    window[refKey] = new Chart(document.getElementById(canvasId), config);
   }
 }
 
-// ---- POD tab -----------------------------------------------------------
-function renderPodCards(rows, columns) {
-  const amountCol = findColumnName(columns, "amount");
-  const collectedCol = findColumnName(columns, "collected") && columns.find(c => c.toLowerCase() === "collected");
-  const balanceCol = findColumnName(columns, "balance");
-  const statusCol = findColumnName(columns, "collected/not collected") || findColumnName(columns, "collected/ not collected");
+function baseBarOptions({ horizontal }) {
+  const muted = cssVar("--muted");
+  const grid = cssVar("--grid");
+  const line = cssVar("--line");
+  const valueAxis = {
+    grid: { color: grid, drawTicks: false },
+    border: { display: false },
+    ticks: { color: muted, callback: (v) => fmtLakh(v) },
+  };
+  const catAxis = {
+    grid: { display: false },
+    border: { color: line },
+    ticks: { color: muted, autoSkip: false },
+  };
+  return {
+    indexAxis: horizontal ? "y" : "x",
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: (c) => " ₹" + fmtLakh(horizontal ? c.parsed.x : c.parsed.y) + " L",
+        },
+      },
+    },
+    scales: horizontal ? { x: valueAxis, y: catAxis } : { x: catAxis, y: valueAxis },
+  };
+}
 
+function renderCategoryChart(sections) {
+  const s = findSection(sections, "category wise");
+  const { labels, values } = balanceSeries(s);
+  const colors = [cssVar("--s1"), cssVar("--s2"), cssVar("--s3"), cssVar("--s4"), cssVar("--s5")];
+  upsertChart("_categoryChart", "categoryChart", {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{ data: values, backgroundColor: labels.map((_, i) => colors[i % colors.length]), borderRadius: 4, maxBarThickness: 40 }],
+    },
+    options: baseBarOptions({ horizontal: false }),
+  });
+}
+
+function renderPodChart(sections) {
+  const s = findSection(sections, "direct advertiser");
+  const { labels, values } = balanceSeries(s);
+  upsertChart("_podChart", "podChart", {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{ data: values, backgroundColor: cssVar("--s1"), borderRadius: 4, maxBarThickness: 22 }],
+    },
+    options: baseBarOptions({ horizontal: true }),
+  });
+}
+
+function renderTargetMeters(sections) {
+  const panel = document.getElementById("targetPanel");
+  const el = document.getElementById("targetMeters");
+  const s = findSection(sections, "collection target");
+  if (!s || !s.header) {
+    panel.hidden = true;
+    return;
+  }
+  const iAch = findColumnIndex(s.header, "% ach");
+  if (iAch === -1) {
+    panel.hidden = true;
+    return;
+  }
+  const meters = [];
+  s.rows.forEach((r) => {
+    const label = firstText(r);
+    if (!label || /^total/i.test(label)) return;
+    const frac = parseNumber(r[iAch]);
+    if (frac === null) return;
+    const pct = Math.max(0, Math.min(1, frac)) * 100;
+    const cls = frac >= 0.75 ? "good" : frac >= 0.4 ? "" : frac >= 0.2 ? "warn" : "low";
+    meters.push(`<div class="meter">
+      <span class="meter-label">${label}</span>
+      <span class="meter-track"><span class="meter-fill ${cls}" style="width:${pct.toFixed(1)}%"></span></span>
+      <span class="meter-val">${(frac * 100).toFixed(0)}%</span>
+    </div>`);
+  });
+  if (!meters.length) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  el.innerHTML = meters.join("");
+}
+
+function renderSummaryTables(sections) {
+  const container = document.getElementById("summaryTables");
+  container.innerHTML = "";
+  sections.forEach((s) => {
+    if (!s.header && s.rows.length === 0) return;
+    container.appendChild(buildSummaryCard(s));
+  });
+}
+
+function buildSummaryCard(section) {
+  const card = document.createElement("div");
+  card.className = "panel summary-card";
+
+  const head = document.createElement("div");
+  head.className = "panel-head";
+  head.innerHTML =
+    `<h3 class="panel-title">${section.title || "Details"}</h3>` +
+    (section.subtitle ? `<span class="panel-sub">${section.subtitle}</span>` : "");
+  card.appendChild(head);
+
+  const scroll = document.createElement("div");
+  scroll.className = "summary-scroll";
+  const table = document.createElement("table");
+  table.className = "summary-table";
+
+  const header = section.header || [];
+  // Drop the duplicated label column (e.g. "Status","Status").
+  const dropDupCol =
+    header.length > 1 && String(header[0] ?? "").trim() === String(header[1] ?? "").trim() && header[0];
+  const keep = header.map((_, i) => i).filter((i) => !(dropDupCol && i === 1));
+
+  // Per-column percent flag (columns whose header contains "%").
+  const pctCol = keep.map((i) => /%/.test(String(header[i] ?? "")));
+
+  if (header.length) {
+    const thead = document.createElement("thead");
+    const tr = document.createElement("tr");
+    keep.forEach((i) => {
+      const th = document.createElement("th");
+      th.textContent = String(header[i] ?? "").replace(/\n/g, " ").trim();
+      tr.appendChild(th);
+    });
+    thead.appendChild(tr);
+    table.appendChild(thead);
+  }
+
+  const tbody = document.createElement("tbody");
+  section.rows.forEach((r) => {
+    const label = firstText(r);
+    const isTotal = /^total/i.test(label) || label === "";
+    const isAux = /salience|cohort|% collection/i.test(label);
+    const tr = document.createElement("tr");
+    if (isTotal) tr.className = "is-total";
+    else if (isAux) tr.className = "is-aux";
+
+    keep.forEach((colIdx, k) => {
+      const td = document.createElement("td");
+      const raw = r[colIdx];
+      if (k === 0) {
+        td.textContent = raw === undefined || raw === "" ? (isTotal ? "Total" : "") : String(raw);
+      } else {
+        const n = parseNumber(raw);
+        if (n === null) {
+          td.textContent = raw === undefined ? "" : String(raw).trim() === "#DIV/0!" ? "—" : String(raw);
+        } else if (pctCol[k] || isAux) {
+          td.textContent = fmtPercent(n);
+        } else {
+          td.textContent = fmtLakh(n);
+          if (n < 0) td.className = "num-neg";
+        }
+      }
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+
+  scroll.appendChild(table);
+  card.appendChild(scroll);
+  return card;
+}
+
+// ============================================================
+// POD DETAIL RENDER
+// ============================================================
+function renderPodCards(rows, columns) {
+  const findCol = (kw) => columns.find((c) => c.toLowerCase().includes(kw.toLowerCase()));
+  const amountCol = findCol("amount");
+  const collectedCol = columns.find((c) => c.toLowerCase() === "collected");
+  const balanceCol = findCol("balance");
+  const statusCol = findCol("collected/not collected") || findCol("collected/ not collected");
   const sum = (col) => rows.reduce((acc, r) => acc + (parseNumber(r[col]) ?? 0), 0);
 
-  const cards = [
-    { label: "Invoices", value: formatNumber(rows.length) },
-  ];
-  if (amountCol) cards.push({ label: "Total Amount", value: formatNumber(sum(amountCol)) });
-  if (collectedCol) cards.push({ label: "Total Collected", value: formatNumber(sum(collectedCol)) });
-  if (balanceCol) cards.push({ label: "Total Balance", value: formatNumber(sum(balanceCol)) });
+  const cards = [{ label: "Invoices", value: rows.length.toLocaleString("en-IN"), accent: "" }];
+  if (amountCol) cards.push({ label: "Total amount", value: fmtRupees(sum(amountCol)), accent: "" });
+  if (balanceCol) cards.push({ label: "Balance outstanding", value: fmtRupees(sum(balanceCol)), accent: "accent-crit" });
+  if (collectedCol) cards.push({ label: "Collected", value: fmtRupees(sum(collectedCol)), accent: "accent-good" });
   if (statusCol) {
     const pending = rows.filter((r) => (r[statusCol] || "").trim() && !/^collected$/i.test((r[statusCol] || "").trim())).length;
-    cards.push({ label: "Pending Items", value: formatNumber(pending) });
+    cards.push({ label: "Pending items", value: pending.toLocaleString("en-IN"), accent: "accent-warn" });
   }
 
-  const cardsEl = document.getElementById("podCards");
-  let cardEls = cardsEl.querySelectorAll(".card");
-  if (cardEls.length !== cards.length) {
-    cardsEl.innerHTML = "";
-    cards.forEach(() => {
-      const el = document.createElement("div");
-      el.className = "card";
-      el.innerHTML = '<div class="label"></div><div class="value"></div>';
-      cardsEl.appendChild(el);
-    });
-    cardEls = cardsEl.querySelectorAll(".card");
-  }
-  cards.forEach((c, i) => {
-    const labelEl = cardEls[i].querySelector(".label");
-    const valueEl = cardEls[i].querySelector(".value");
-    if (labelEl.textContent !== c.label) labelEl.textContent = c.label;
-    valueEl.textContent = c.value;
-  });
-
+  document.getElementById("podCards").innerHTML = cards
+    .map((c) => `<div class="kpi ${c.accent}"><div class="kpi-label">${c.label}</div><div class="kpi-value" style="font-size:22px">${c.value}</div></div>`)
+    .join("");
   return statusCol;
 }
-
-let lastTableHeaderKey = null;
-let lastRenderedTabIndex = null;
 
 function cellContent(r, c, statusColName) {
   const val = r[c] ?? "";
@@ -252,7 +512,7 @@ function buildRow(r, columns, statusColName) {
 
 function flashCell(td) {
   td.classList.remove("cell-flash");
-  void td.offsetWidth; // restart the animation if it's already flashing
+  void td.offsetWidth;
   td.classList.add("cell-flash");
 }
 
@@ -300,18 +560,18 @@ function renderPodTable() {
 
   document.getElementById("rowCount").textContent = `${filtered.length} of ${podRows.length} rows`;
 
-  // Several POD tabs share an identical column layout, so matching column
-  // names/row counts alone cannot tell same-tab-refreshed apart from
-  // switched-to-a-different-tab-that-looks-the-same. Track the tab index
-  // explicitly so a tab switch always forces a full rebuild of both the
-  // header and body, never a diff against another tab's leftover rows.
-  const tabChanged = lastRenderedTabIndex !== currentTabIndex;
-  lastRenderedTabIndex = currentTabIndex;
+  // Rebuild the whole table when the POD, columns, or sort change; otherwise
+  // diff cells in place so the periodic refresh doesn't flicker.
+  const renderKey = currentPodIndex + "" + podColumns.join("") + sortCol + sortDir + statusVal + searchTerm;
+  const structuralChange = lastPodRenderKey !== renderKey;
+  lastPodRenderKey = renderKey;
 
-  // Only rebuild the header when the tab, columns, or sort indicator change.
-  const headerKey = podColumns.join("") + "" + sortCol + sortDir;
-  if (tabChanged || lastTableHeaderKey !== headerKey) {
-    lastTableHeaderKey = headerKey;
+  const statusColName = statusCol;
+  const visibleRows = filtered.slice(0, 2000);
+  const tbody = document.querySelector("#podTable tbody");
+  const existingTrs = tbody.querySelectorAll("tr");
+
+  if (structuralChange || existingTrs.length !== visibleRows.length) {
     const thead = document.querySelector("#podTable thead");
     thead.innerHTML = "";
     const headRow = document.createElement("tr");
@@ -326,35 +586,25 @@ function renderPodTable() {
       headRow.appendChild(th);
     });
     thead.appendChild(headRow);
-  }
 
-  const tbody = document.querySelector("#podTable tbody");
-  const statusColName = document.getElementById("statusFilter").dataset.col;
-  const visibleRows = filtered.slice(0, 2000);
-  const existingTrs = tbody.querySelectorAll("tr");
-
-  // Same tab, same row count as last render (the overwhelmingly common case
-  // on a background refresh) → update only the cells whose values actually
-  // changed, in place. Otherwise fall back to a full rebuild.
-  if (!tabChanged && existingTrs.length === visibleRows.length) {
-    visibleRows.forEach((r, i) => updateRowInPlace(existingTrs[i], r, podColumns, statusColName));
-  } else {
     tbody.innerHTML = "";
     visibleRows.forEach((r) => tbody.appendChild(buildRow(r, podColumns, statusColName)));
+  } else {
+    visibleRows.forEach((r, i) => updateRowInPlace(existingTrs[i], r, podColumns, statusColName));
   }
 
   tableWrap.scrollTop = prevScrollTop;
 }
 
 function renderPod(rows) {
-  document.getElementById("summaryView").style.display = "none";
-  const view = document.getElementById("podView");
-  view.style.display = "block";
+  document.getElementById("overviewView").hidden = true;
+  document.getElementById("podView").hidden = false;
 
-  if (!rows.length) throw new Error("This tab returned no data.");
+  if (!rows.length) throw new Error("This POD returned no data.");
   podColumns = rows[0].map((c) => (c || "").trim()).filter((c) => c !== "");
   const numCols = rows[0].length;
-  podRows = rows.slice(1)
+  podRows = rows
+    .slice(1)
     .filter((r) => r.some((cell) => (cell || "").trim() !== ""))
     .map((r) => {
       const obj = {};
@@ -385,48 +635,62 @@ function renderPod(rows) {
   renderPodTable();
 }
 
-// ---- Load / refresh -----------------------------------------------------
-// `background: true` = a periodic auto-refresh of the tab already on screen.
-// These must never flash a loading state or tear down the view — only
-// touch the DOM if the underlying data actually changed.
-async function loadCurrentTab(opts = {}) {
+// ============================================================
+// LOAD / REFRESH
+// ============================================================
+function currentKey() {
+  return currentView === "overview" ? SUMMARY_SHEET : PODS[currentPodIndex].sheetName;
+}
+
+async function loadCurrent(opts = {}) {
   const background = !!opts.background;
-  const tab = TABS[currentTabIndex];
+  const key = currentKey();
   const loadingEl = document.getElementById("loadingMsg");
   const errorEl = document.getElementById("errorMsg");
   const lastUpdatedEl = document.getElementById("lastUpdated");
 
   if (!background) {
-    document.getElementById("summaryView").style.display = "none";
-    document.getElementById("podView").style.display = "none";
-    errorEl.style.display = "none";
-    loadingEl.style.display = "block";
-    loadingEl.textContent = `Loading “${tab.label}”…`;
+    document.getElementById("overviewView").hidden = true;
+    document.getElementById("podView").hidden = true;
+    errorEl.hidden = true;
+    loadingEl.hidden = false;
   }
 
   try {
-    const rows = await fetchTabRows(tab.sheetName);
+    const rows = await fetchTabRows(key);
     const snapshot = JSON.stringify(rows);
 
-    if (background && lastRawByTab[tab.sheetName] === snapshot) {
-      lastUpdatedEl.textContent = "Live — checked " + new Date().toLocaleTimeString() + ", no changes";
+    if (background && lastSnapshotByKey[key] === snapshot) {
+      lastUpdatedEl.textContent = "Live · checked " + new Date().toLocaleTimeString();
       return;
     }
-    lastRawByTab[tab.sheetName] = snapshot;
+    lastSnapshotByKey[key] = snapshot;
 
-    if (tab.type === "summary") renderSummary(rows);
+    if (currentView === "overview") renderOverview(rows);
     else renderPod(rows);
-    errorEl.style.display = "none";
-    lastUpdatedEl.textContent = "Live — updated " + new Date().toLocaleTimeString();
+
+    errorEl.hidden = true;
+    lastUpdatedEl.textContent = "Live · updated " + new Date().toLocaleTimeString();
   } catch (err) {
     console.error(err);
-    errorEl.style.display = "block";
-    errorEl.textContent = "Couldn't load this tab.\n\n" + (err && err.message ? err.message : err);
+    if (!background) {
+      errorEl.hidden = false;
+      errorEl.textContent = "Couldn't load data.\n\n" + (err && err.message ? err.message : err);
+    }
   } finally {
-    if (!background) loadingEl.style.display = "none";
+    if (!background) loadingEl.hidden = true;
   }
 }
 
+// ---- View switching ------------------------------------------------------
+function showView(view) {
+  currentView = view;
+  document.querySelectorAll(".viewnav-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
+  document.getElementById("podPicker").hidden = view !== "pod";
+  loadCurrent({ background: false });
+}
+
+// ---- Auto refresh --------------------------------------------------------
 let refreshTimer = null;
 let autoRefreshPaused = false;
 
@@ -434,23 +698,44 @@ function startAutoRefresh() {
   if (refreshTimer) clearInterval(refreshTimer);
   refreshTimer = setInterval(() => {
     if (!autoRefreshPaused && document.visibilityState === "visible") {
-      loadCurrentTab({ background: true });
+      loadCurrent({ background: true });
     }
   }, REFRESH_INTERVAL_MS);
 }
 
 function setPaused(paused) {
   autoRefreshPaused = paused;
-  document.getElementById("pauseBtn").textContent = paused ? "Resume auto-refresh" : "Pause auto-refresh";
+  document.getElementById("pauseBtn").textContent = paused ? "Resume" : "Pause";
   document.getElementById("liveDot").classList.toggle("paused", paused);
-  document.getElementById("liveDot").title = paused ? "Auto-refresh is paused" : "Auto-refresh is on";
 }
 
-document.getElementById("refreshBtn").addEventListener("click", () => loadCurrentTab({ background: false }));
-document.getElementById("pauseBtn").addEventListener("click", () => setPaused(!autoRefreshPaused));
-document.getElementById("searchBox").addEventListener("input", renderPodTable);
-document.getElementById("statusFilter").addEventListener("change", renderPodTable);
+// ---- Init ----------------------------------------------------------------
+function init() {
+  const podSelect = document.getElementById("podSelect");
+  PODS.forEach((p, i) => {
+    const opt = document.createElement("option");
+    opt.value = String(i);
+    opt.textContent = p.label;
+    podSelect.appendChild(opt);
+  });
+  podSelect.addEventListener("change", () => {
+    currentPodIndex = Number(podSelect.value);
+    sortCol = null;
+    sortDir = 1;
+    loadCurrent({ background: false });
+  });
 
-renderTabNav();
-loadCurrentTab({ background: false });
-startAutoRefresh();
+  document.querySelectorAll(".viewnav-btn").forEach((b) => {
+    b.addEventListener("click", () => showView(b.dataset.view));
+  });
+
+  document.getElementById("refreshBtn").addEventListener("click", () => loadCurrent({ background: false }));
+  document.getElementById("pauseBtn").addEventListener("click", () => setPaused(!autoRefreshPaused));
+  document.getElementById("searchBox").addEventListener("input", renderPodTable);
+  document.getElementById("statusFilter").addEventListener("change", renderPodTable);
+
+  showView("overview");
+  startAutoRefresh();
+}
+
+init();

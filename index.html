@@ -9,30 +9,70 @@
 </head>
 <body>
 <header class="topbar">
-  <h1>Collections Dashboard</h1>
+  <div class="brand">
+    <span class="brand-mark"></span>
+    <div class="brand-text">
+      <div class="brand-title">Collections Dashboard</div>
+      <div class="brand-sub">Debtors &amp; recovery overview</div>
+    </div>
+  </div>
   <div class="topbar-right">
-    <span id="liveDot" class="live-dot" title="Auto-refresh is on"></span>
-    <span id="lastUpdated" class="muted"></span>
-    <button id="pauseBtn" class="secondary-btn">Pause auto-refresh</button>
-    <button id="refreshBtn">Refresh</button>
+    <span class="live"><span id="liveDot" class="live-dot"></span><span id="lastUpdated" class="muted"></span></span>
+    <button id="pauseBtn" class="btn btn-ghost">Pause</button>
+    <button id="refreshBtn" class="btn btn-primary">Refresh</button>
   </div>
 </header>
 
-<nav id="tabNav" class="tabs"></nav>
+<nav class="viewnav">
+  <div class="viewnav-tabs">
+    <button class="viewnav-btn active" data-view="overview">Overview</button>
+    <button class="viewnav-btn" data-view="pod">POD Details</button>
+  </div>
+  <div class="podpicker" id="podPicker" hidden>
+    <label for="podSelect">POD</label>
+    <select id="podSelect"></select>
+  </div>
+</nav>
 
 <main id="app">
-  <div id="loadingMsg" class="loading-row muted"><span class="spinner"></span>Loading data…</div>
-  <div id="errorMsg" class="error-box" style="display:none;"></div>
+  <div id="loadingMsg" class="loading-row muted"><span class="spinner"></span><span>Loading data…</span></div>
+  <div id="errorMsg" class="error-box" hidden></div>
 
-  <section id="summaryView" class="view" style="display:none;">
-    <div id="summaryCards" class="cards"></div>
-    <div class="chart-card">
-      <canvas id="agingChart" height="90"></canvas>
+  <!-- ===== Overview ===== -->
+  <section id="overviewView" class="view" hidden>
+    <div id="kpiRow" class="kpi-row"></div>
+
+    <div class="chart-grid">
+      <div class="panel">
+        <div class="panel-head">
+          <h3 class="panel-title">Outstanding by category</h3>
+          <span class="panel-sub">Current balance · ₹ Lakhs</span>
+        </div>
+        <div class="chart-holder"><canvas id="categoryChart"></canvas></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h3 class="panel-title">Outstanding by POD</h3>
+          <span class="panel-sub">Current balance · ₹ Lakhs</span>
+        </div>
+        <div class="chart-holder"><canvas id="podChart"></canvas></div>
+      </div>
     </div>
+
+    <div class="panel" id="targetPanel" hidden>
+      <div class="panel-head">
+        <h3 class="panel-title">Collection target achievement</h3>
+        <span class="panel-sub">Month to date</span>
+      </div>
+      <div id="targetMeters" class="meter-list"></div>
+    </div>
+
+    <div id="summaryTables" class="section-stack"></div>
   </section>
 
-  <section id="podView" class="view" style="display:none;">
-    <div id="podCards" class="cards"></div>
+  <!-- ===== POD detail ===== -->
+  <section id="podView" class="view" hidden>
+    <div id="podCards" class="kpi-row"></div>
     <div class="toolbar">
       <input id="searchBox" type="text" placeholder="Search customer name…">
       <select id="statusFilter"><option value="">All statuses</option></select>

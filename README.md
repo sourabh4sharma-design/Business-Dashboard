@@ -23,11 +23,22 @@ The request is also gated by a shared secret key baked into `app.js`
 key is visible in this repo's public source; the paytm.com domain
 restriction is the actual access control.
 
-## Updating the tab list
+## Layout
 
-If tabs are renamed, added, or removed in the sheet, update the `TABS` array
-in `app.js` to match — no server-side script changes needed, since the Apps
-Script just reads whatever tab name it's asked for.
+Two views:
+
+- **Overview** — reads the `Summary` tab. That tab stacks several tables
+  (status breakdown, category split, agency/govt outstanding, direct
+  advertiser by POD, collection targets). `parseSummarySections()` splits it
+  into those tables generically (title row → optional subtitle → a keyword-
+  detected header row → data rows), so it survives row-count changes. On top
+  it derives KPI tiles, two bar charts, and the target-achievement meters.
+- **POD Details** — one POD sheet at a time, chosen from the dropdown. The
+  list of PODs is the `PODS` array in `app.js`.
+
+If PODs are renamed/added/removed, update `PODS`. If the Summary tables are
+restructured, the generic parser adapts as long as each table keeps a title
+row and a header row containing one of `HEADER_KEYWORDS`.
 
 ## Updating the Apps Script
 
