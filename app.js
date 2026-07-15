@@ -1,17 +1,23 @@
 // ---- Configuration -----------------------------------------------------
-// The sheet is private, so a scheduled GitHub Action (see
-// .github/workflows/refresh-data.yml) fetches it server-side using a
-// Google service account and commits the result into data/*.json. This
-// page just reads those committed files — never talks to Google directly.
+// The sheet is private and domain-restricted to paytm.com. Data is fetched
+// live, on a short interval, straight from an Apps Script web app deployed
+// inside that sheet (Execute as: Me) — via JSONP, since a plain fetch()
+// would hit the paytm.com Google sign-in wall instead of returning JSON.
+// Only works for viewers signed into a paytm.com Google account in-browser.
+const APPS_SCRIPT_URL =
+  "https://script.google.com/a/macros/paytm.com/s/AKfycbw_cHycuxQGlm5G2VWC7vLg-OpdXxthF1m0B3ixELS5b4lFZjOWKAeAaYWWJxm8N2D1/exec";
+const APPS_SCRIPT_KEY = "eFZYQGevyYbeiRxswugbkF7YI4BLAcN3";
+const REFRESH_INTERVAL_MS = 7000;
+
 const TABS = [
-  { label: "Summary", slug: "summary", type: "summary" },
-  { label: "D2C & Auto POD", slug: "d2c-auto", type: "pod" },
-  { label: "Govt + Telco", slug: "govt-telco", type: "pod" },
-  { label: "CDIT+BFSI POD", slug: "cdit-bfsi", type: "pod" },
-  { label: "FMCG North POD", slug: "fmcg-north", type: "pod" },
-  { label: "FMCG - South POD", slug: "fmcg-south", type: "pod" },
-  { label: "FMCG West POD", slug: "fmcg-west", type: "pod" },
-  { label: "Gaming POD", slug: "gaming", type: "pod" },
+  { label: "Summary", sheetName: "Summary", type: "summary" },
+  { label: "D2C & Auto POD", sheetName: "D2C & Auto POD", type: "pod" },
+  { label: "Govt + Telco", sheetName: "Govt + Telco", type: "pod" },
+  { label: "CDIT+BFSI POD", sheetName: "CDIT+BFSI POD", type: "pod" },
+  { label: "FMCG North POD", sheetName: "FMCG North POD", type: "pod" },
+  { label: "FMCG - South POD", sheetName: "FMCG - South POD", type: "pod" },
+  { label: "FMCG West POD", sheetName: "FMCG West POD", type: "pod" },
+  { label: "Gaming POD", sheetName: "Gaming POD", type: "pod" },
 ];
 
 // ---- State ---------------------------------------------------------------
@@ -46,16 +52,42 @@ function findColumnName(columns, keyword) {
   return columns.find((c) => c.toLowerCase().includes(kw));
 }
 
-async function fetchJsonRows(slug) {
-  const res = await fetch(`data/${slug}.json?_=${Date.now()}`, { cache: "no-store" });
-  if (!res.ok) {
-    throw new Error(
-      `data/${slug}.json not found yet (HTTP ${res.status}). The scheduled Action may not have run yet — ` +
-      `you can trigger it manually from the repo's Actions tab.`
-    );
-  }
-  const body = await res.json();
-  return body.values || [];
+function jsonpFetch(url, params) {
+  return new Promise((resolve, reject) => {
+    const cbName = "jsonp_cb_" + Math.random().toString(36).slice(2);
+    const script = document.createElement("script");
+    let done = false;
+    const cleanup = () => {
+      delete window[cbName];
+      script.remove();
+    };
+    window[cbName] = (data) => {
+      done = true;
+      resolve(data);
+      cleanup();
+    };
+    script.onerror = () => {
+      if (!done) {
+        reject(new Error("Couldn't reach the data source (JSONP load failed)."));
+        cleanup();
+      }
+    };
+    const qs = new URLSearchParams({ ...params, callback: cbName }).toString();
+    script.src = url + (url.includes("?") ? "&" : "?") + qs;
+    document.body.appendChild(script);
+    setTimeout(() => {
+      if (!done) {
+        reject(new Error("Timed out waiting for data. Make sure you're signed into your paytm.com Google account."));
+        cleanup();
+      }
+    }, 15000);
+  });
+}
+
+async function fetchTabRows(sheetName) {
+  const data = await jsonpFetch(APPS_SCRIPT_URL, { key: APPS_SCRIPT_KEY, tab: sheetName });
+  if (data && data.error) throw new Error(data.error);
+  return (data && data.values) || [];
 }
 
 // ---- Rendering: tabs -----------------------------------------------------
@@ -274,10 +306,10 @@ async function loadCurrentTab() {
   loadingEl.textContent = `Loading “${tab.label}”…`;
 
   try {
-    const rows = await fetchJsonRows(tab.slug);
+    const rows = await fetchTabRows(tab.sheetName);
     if (tab.type === "summary") renderSummary(rows);
     else renderPod(rows);
-    document.getElementById("lastUpdated").textContent = "Data refreshed on a schedule — page loaded " + new Date().toLocaleTimeString();
+    document.getElementById("lastUpdated").textContent = "Live — last synced " + new Date().toLocaleTimeString();
   } catch (err) {
     console.error(err);
     errorEl.style.display = "block";
@@ -287,9 +319,18 @@ async function loadCurrentTab() {
   }
 }
 
+let refreshTimer = null;
+function startAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => {
+    if (document.visibilityState === "visible") loadCurrentTab();
+  }, REFRESH_INTERVAL_MS);
+}
+
 document.getElementById("refreshBtn").addEventListener("click", loadCurrentTab);
 document.getElementById("searchBox").addEventListener("input", renderPodTable);
 document.getElementById("statusFilter").addEventListener("change", renderPodTable);
 
 renderTabNav();
 loadCurrentTab();
+startAutoRefresh();
