@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Collections Dashboard</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <h1>Collections Dashboard</h1>
+  <div class="topbar-right">
+    <span id="lastUpdated" class="muted"></span>
+    <button id="refreshBtn">Refresh</button>
+  </div>
+</header>
+
+<nav id="tabNav" class="tabs"></nav>
+
+<main id="app">
+  <div id="loadingMsg" class="muted">Loading data…</div>
+  <div id="errorMsg" class="error-box" style="display:none;"></div>
+
+  <section id="summaryView" class="view" style="display:none;">
+    <div id="summaryCards" class="cards"></div>
+    <div class="chart-card">
+      <canvas id="agingChart" height="90"></canvas>
+    </div>
+  </section>
+
+  <section id="podView" class="view" style="display:none;">
+    <div id="podCards" class="cards"></div>
+    <div class="toolbar">
+      <input id="searchBox" type="text" placeholder="Search customer name…">
+      <select id="statusFilter"><option value="">All statuses</option></select>
+      <span id="rowCount" class="muted"></span>
+    </div>
+    <div class="table-wrap">
+      <table id="podTable">
+        <thead></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
