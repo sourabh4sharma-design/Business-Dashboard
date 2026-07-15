@@ -69,6 +69,44 @@ button {
 
 button:hover { opacity: 0.9; }
 
+.secondary-btn {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+  animation: livePulse 2s ease-in-out infinite;
+}
+
+.live-dot.paused {
+  background: var(--muted);
+  animation: none;
+}
+
+@keyframes livePulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.4); }
+  50% { opacity: 0.6; box-shadow: 0 0 0 4px rgba(22, 163, 74, 0); }
+}
+
+.loading-row { display: flex; align-items: center; gap: 8px; }
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
 .tabs {
   display: flex;
   flex-wrap: wrap;
@@ -187,3 +225,10 @@ tbody tr:hover { background: rgba(128,128,128,0.08); }
 
 .status-collected { background: var(--ok-bg); color: var(--ok); }
 .status-pending { background: var(--danger-bg); color: var(--danger); }
+
+@keyframes cellFlash {
+  from { background-color: rgba(37, 99, 235, 0.25); }
+  to { background-color: transparent; }
+}
+
+.cell-flash { animation: cellFlash 1.4s ease-out; }

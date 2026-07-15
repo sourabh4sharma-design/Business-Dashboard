@@ -11,7 +11,9 @@
 <header class="topbar">
   <h1>Collections Dashboard</h1>
   <div class="topbar-right">
+    <span id="liveDot" class="live-dot" title="Auto-refresh is on"></span>
     <span id="lastUpdated" class="muted"></span>
+    <button id="pauseBtn" class="secondary-btn">Pause auto-refresh</button>
     <button id="refreshBtn">Refresh</button>
   </div>
 </header>
@@ -19,7 +21,7 @@
 <nav id="tabNav" class="tabs"></nav>
 
 <main id="app">
-  <div id="loadingMsg" class="muted">Loading data…</div>
+  <div id="loadingMsg" class="loading-row muted"><span class="spinner"></span>Loading data…</div>
   <div id="errorMsg" class="error-box" style="display:none;"></div>
 
   <section id="summaryView" class="view" style="display:none;">

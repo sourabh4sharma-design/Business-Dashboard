@@ -226,6 +226,54 @@ function renderPodCards(rows, columns) {
   return statusCol;
 }
 
+let lastTableHeaderKey = null;
+let lastRenderedTabIndex = null;
+
+function cellContent(r, c, statusColName) {
+  const val = r[c] ?? "";
+  if (c === statusColName && val) {
+    const isCollected = /^collected$/i.test(String(val).trim());
+    return { html: `<span class="status-pill ${isCollected ? "status-collected" : "status-pending"}">${val}</span>`, isHtml: true };
+  }
+  return { html: String(val), isHtml: false };
+}
+
+function buildRow(r, columns, statusColName) {
+  const tr = document.createElement("tr");
+  columns.forEach((c) => {
+    const td = document.createElement("td");
+    const { html, isHtml } = cellContent(r, c, statusColName);
+    if (isHtml) td.innerHTML = html;
+    else td.textContent = html;
+    tr.appendChild(td);
+  });
+  return tr;
+}
+
+function flashCell(td) {
+  td.classList.remove("cell-flash");
+  void td.offsetWidth; // restart the animation if it's already flashing
+  td.classList.add("cell-flash");
+}
+
+function updateRowInPlace(tr, r, columns, statusColName) {
+  const cells = tr.children;
+  columns.forEach((c, i) => {
+    const td = cells[i];
+    if (!td) return;
+    const { html, isHtml } = cellContent(r, c, statusColName);
+    if (isHtml) {
+      if (td.innerHTML !== html) {
+        td.innerHTML = html;
+        flashCell(td);
+      }
+    } else if (td.textContent !== html) {
+      td.textContent = html;
+      flashCell(td);
+    }
+  });
+}
+
 function renderPodTable() {
   const tableWrap = document.querySelector(".table-wrap");
   const prevScrollTop = tableWrap.scrollTop;
@@ -252,38 +300,48 @@ function renderPodTable() {
 
   document.getElementById("rowCount").textContent = `${filtered.length} of ${podRows.length} rows`;
 
-  const thead = document.querySelector("#podTable thead");
-  thead.innerHTML = "";
-  const headRow = document.createElement("tr");
-  podColumns.forEach((c) => {
-    const th = document.createElement("th");
-    th.textContent = c + (sortCol === c ? (sortDir === 1 ? " ▲" : " ▼") : "");
-    th.addEventListener("click", () => {
-      sortDir = sortCol === c ? -sortDir : 1;
-      sortCol = c;
-      renderPodTable();
+  // Several POD tabs share an identical column layout, so matching column
+  // names/row counts alone cannot tell same-tab-refreshed apart from
+  // switched-to-a-different-tab-that-looks-the-same. Track the tab index
+  // explicitly so a tab switch always forces a full rebuild of both the
+  // header and body, never a diff against another tab's leftover rows.
+  const tabChanged = lastRenderedTabIndex !== currentTabIndex;
+  lastRenderedTabIndex = currentTabIndex;
+
+  // Only rebuild the header when the tab, columns, or sort indicator change.
+  const headerKey = podColumns.join("") + "" + sortCol + sortDir;
+  if (tabChanged || lastTableHeaderKey !== headerKey) {
+    lastTableHeaderKey = headerKey;
+    const thead = document.querySelector("#podTable thead");
+    thead.innerHTML = "";
+    const headRow = document.createElement("tr");
+    podColumns.forEach((c) => {
+      const th = document.createElement("th");
+      th.textContent = c + (sortCol === c ? (sortDir === 1 ? " ▲" : " ▼") : "");
+      th.addEventListener("click", () => {
+        sortDir = sortCol === c ? -sortDir : 1;
+        sortCol = c;
+        renderPodTable();
+      });
+      headRow.appendChild(th);
     });
-    headRow.appendChild(th);
-  });
-  thead.appendChild(headRow);
+    thead.appendChild(headRow);
+  }
 
   const tbody = document.querySelector("#podTable tbody");
-  tbody.innerHTML = "";
   const statusColName = document.getElementById("statusFilter").dataset.col;
-  filtered.slice(0, 2000).forEach((r) => {
-    const tr = document.createElement("tr");
-    podColumns.forEach((c) => {
-      const td = document.createElement("td");
-      if (c === statusColName && r[c]) {
-        const isCollected = /^collected$/i.test(r[c].trim());
-        td.innerHTML = `<span class="status-pill ${isCollected ? "status-collected" : "status-pending"}">${r[c]}</span>`;
-      } else {
-        td.textContent = r[c] ?? "";
-      }
-      tr.appendChild(td);
-    });
-    tbody.appendChild(tr);
-  });
+  const visibleRows = filtered.slice(0, 2000);
+  const existingTrs = tbody.querySelectorAll("tr");
+
+  // Same tab, same row count as last render (the overwhelmingly common case
+  // on a background refresh) → update only the cells whose values actually
+  // changed, in place. Otherwise fall back to a full rebuild.
+  if (!tabChanged && existingTrs.length === visibleRows.length) {
+    visibleRows.forEach((r, i) => updateRowInPlace(existingTrs[i], r, podColumns, statusColName));
+  } else {
+    tbody.innerHTML = "";
+    visibleRows.forEach((r) => tbody.appendChild(buildRow(r, podColumns, statusColName)));
+  }
 
   tableWrap.scrollTop = prevScrollTop;
 }
@@ -370,14 +428,26 @@ async function loadCurrentTab(opts = {}) {
 }
 
 let refreshTimer = null;
+let autoRefreshPaused = false;
+
 function startAutoRefresh() {
   if (refreshTimer) clearInterval(refreshTimer);
   refreshTimer = setInterval(() => {
-    if (document.visibilityState === "visible") loadCurrentTab({ background: true });
+    if (!autoRefreshPaused && document.visibilityState === "visible") {
+      loadCurrentTab({ background: true });
+    }
   }, REFRESH_INTERVAL_MS);
 }
 
+function setPaused(paused) {
+  autoRefreshPaused = paused;
+  document.getElementById("pauseBtn").textContent = paused ? "Resume auto-refresh" : "Pause auto-refresh";
+  document.getElementById("liveDot").classList.toggle("paused", paused);
+  document.getElementById("liveDot").title = paused ? "Auto-refresh is paused" : "Auto-refresh is on";
+}
+
 document.getElementById("refreshBtn").addEventListener("click", () => loadCurrentTab({ background: false }));
+document.getElementById("pauseBtn").addEventListener("click", () => setPaused(!autoRefreshPaused));
 document.getElementById("searchBox").addEventListener("input", renderPodTable);
 document.getElementById("statusFilter").addEventListener("change", renderPodTable);
 
