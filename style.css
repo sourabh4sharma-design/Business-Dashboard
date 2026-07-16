@@ -53,6 +53,9 @@
 
 * { box-sizing: border-box; }
 
+/* The hidden attribute must beat class-level display:flex/grid rules. */
+[hidden] { display: none !important; }
+
 html { -webkit-text-size-adjust: 100%; }
 
 body {
