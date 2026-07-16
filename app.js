@@ -7,7 +7,7 @@
 // underlying data actually changed.
 // ============================================================
 const APPS_SCRIPT_URL =
-  "https://script.google.com/a/macros/paytm.com/s/AKfycby56GdJ2lIjadPliNV0FUD8jwn3jC41uq6vd5jcYGvDXkraAsH8gB0gc0a5VOYAtfJB/exec";
+  "https://script.google.com/a/macros/paytm.com/s/AKfycbxf9SrdFmYBcQgCf1CGhvB1sa8GLSyACEsKWO-zV4QU66gjLeh5lBM2OmzAMrm1b0XA/exec";
 const APPS_SCRIPT_KEY = "eFZYQGevyYbeiRxswugbkF7YI4BLAcN3";
 const REFRESH_INTERVAL_MS = 7000; // Overview auto-refresh cadence
 const POD_REFRESH_MS = 30000; // POD auto-refresh cadence (data is large)
