@@ -597,12 +597,23 @@ function buildSortableSummaryTable(header, keep, pctCol, rows) {
     keep.forEach((i, k) => {
       const th = document.createElement("th");
       const label = String(header[i] ?? "").replace(/\n/g, " ").trim();
-      th.textContent = label + (sortK === k ? (sortDir === 1 ? " ▲" : " ▼") : "");
-      th.addEventListener("click", () => {
+      const isSorted = sortK === k;
+      th.textContent = label + (isSorted ? (sortDir === 1 ? " ▲" : " ▼") : "");
+      th.tabIndex = 0;
+      th.setAttribute("role", "button");
+      th.setAttribute("aria-sort", isSorted ? (sortDir === 1 ? "ascending" : "descending") : "none");
+      const doSort = () => {
         sortDir = sortK === k ? -sortDir : 1;
         sortK = k;
         renderHead();
         renderBody();
+      };
+      th.addEventListener("click", doSort);
+      th.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          doSort();
+        }
       });
       tr.appendChild(th);
     });
@@ -911,13 +922,25 @@ function cellContent(r, c, statusColName) {
 }
 
 // Main row: a leading expand toggle cell, then one cell per main column.
+// The toggle is a real <button> (not just a clickable <tr>) so keyboard and
+// screen-reader users can open the detail panel, not only mouse users.
 function buildMainRow(r, columns, statusColName, key, expanded) {
   const tr = document.createElement("tr");
   tr.className = "pod-row" + (expanded ? " expanded" : "");
   tr.dataset.key = key;
   const toggleTd = document.createElement("td");
   toggleTd.className = "expand-toggle";
-  toggleTd.textContent = expanded ? "▾" : "▸";
+  const toggleBtn = document.createElement("button");
+  toggleBtn.type = "button";
+  toggleBtn.className = "expand-btn";
+  toggleBtn.textContent = expanded ? "▾" : "▸";
+  toggleBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
+  toggleBtn.setAttribute("aria-label", expanded ? "Hide transaction details" : "Show transaction details");
+  toggleBtn.addEventListener("click", (e) => {
+    e.stopPropagation(); // avoid double-toggling via the row's own click handler
+    toggleExpand(key);
+  });
+  toggleTd.appendChild(toggleBtn);
   tr.appendChild(toggleTd);
   columns.forEach((c) => {
     const td = document.createElement("td");
@@ -1034,23 +1057,44 @@ function renderPodTable() {
     headRow.appendChild(document.createElement("th")); // expand-toggle column
     podMainColumns.forEach((c) => {
       const th = document.createElement("th");
-      th.textContent = c + (sortCol === c ? (sortDir === 1 ? " ▲" : " ▼") : "");
-      th.addEventListener("click", () => {
+      const isSorted = sortCol === c;
+      th.textContent = c + (isSorted ? (sortDir === 1 ? " ▲" : " ▼") : "");
+      th.tabIndex = 0;
+      th.setAttribute("role", "button");
+      th.setAttribute("aria-sort", isSorted ? (sortDir === 1 ? "ascending" : "descending") : "none");
+      const doSort = () => {
         sortDir = sortCol === c ? -sortDir : 1;
         sortCol = c;
         renderPodTable();
+      };
+      th.addEventListener("click", doSort);
+      th.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          doSort();
+        }
       });
       headRow.appendChild(th);
     });
     thead.appendChild(headRow);
 
     tbody.innerHTML = "";
-    visibleRows.forEach((r, idx) => {
-      const key = rowKey(r, idx);
-      const expanded = expandedRowKeys.has(key);
-      tbody.appendChild(buildMainRow(r, podMainColumns, statusColName, key, expanded));
-      if (expanded) tbody.appendChild(buildDetailRow(r, podDetailFields, podMainColumns));
-    });
+    if (visibleRows.length === 0) {
+      const tr = document.createElement("tr");
+      tr.className = "empty-state";
+      const td = document.createElement("td");
+      td.colSpan = podMainColumns.length + 1;
+      td.textContent = podRows.length === 0 ? "This POD has no transactions." : "No transactions match the current filters.";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    } else {
+      visibleRows.forEach((r, idx) => {
+        const key = rowKey(r, idx);
+        const expanded = expandedRowKeys.has(key);
+        tbody.appendChild(buildMainRow(r, podMainColumns, statusColName, key, expanded));
+        if (expanded) tbody.appendChild(buildDetailRow(r, podDetailFields, podMainColumns));
+      });
+    }
   } else {
     visibleRows.forEach((r, i) => {
       const tr = existingMainTrs[i];
@@ -1234,7 +1278,7 @@ function startAutoRefresh() {
 
 function setPaused(paused) {
   autoRefreshPaused = paused;
-  document.getElementById("pauseBtn").textContent = paused ? "Resume" : "Pause";
+  document.getElementById("pauseBtn").textContent = paused ? "▶ Resume" : "⏸ Pause";
   document.getElementById("liveDot").classList.toggle("paused", paused);
 }
 

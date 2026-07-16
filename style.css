@@ -9,7 +9,7 @@
   --surface-2: #fcfcfb;
   --ink: #0b0b0b;
   --ink-2: #52514e;
-  --muted: #898781;
+  --muted: #726f68; /* darkened from #898781 — that failed WCAG AA (3.6:1) at the small sizes it's used at */
   --grid: #e1e0d9;
   --line: #c3c2b7;
   --border: rgba(11, 11, 11, 0.10);
@@ -128,6 +128,19 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 .btn-ghost { background: transparent; color: var(--ink-2); border-color: var(--border-strong); }
 .btn-ghost:hover { background: var(--surface-2); color: var(--ink); }
 
+/* Keyboard focus — every clickable control gets a visible ring, not just
+   text inputs/selects. Mouse clicks don't trigger :focus-visible, so this
+   never shows up as "unwanted" chrome for pointer users. */
+.btn:focus-visible,
+.viewnav-btn:focus-visible,
+.chip:focus-visible,
+.expand-btn:focus-visible,
+#podTable thead th:focus-visible,
+.summary-table thead th:focus-visible {
+  outline: 2px solid var(--s1);
+  outline-offset: 2px;
+}
+
 .live-dot {
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--good);
@@ -190,6 +203,20 @@ select:focus, input[type="text"]:focus {
 /* ---------- Layout ---------- */
 #app { max-width: 1360px; margin: 0 auto; padding: 22px 24px 56px; }
 .view { display: flex; flex-direction: column; gap: 18px; }
+
+/* Runs once when a hidden view/card becomes visible (switching tabs, first
+   load) — CSS animations restart on display:none → visible, so this never
+   replays on the silent background-refresh re-renders. */
+@keyframes revealIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.view:not([hidden]) { animation: revealIn 0.28s ease; }
+.loading-card { animation: revealIn 0.28s ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  .view:not([hidden]), .loading-card { animation: none; }
+}
 
 .spinner {
   width: 15px; height: 15px;
@@ -404,6 +431,26 @@ select:focus, input[type="text"]:focus {
 .aging-fill { height: 100%; border-radius: 5px; }
 .aging-val { font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-2); }
 
+/* ---------- Slim scrollbars (data-dense panels only) ---------- */
+.table-wrap, .summary-scroll, .ai-answer {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+.table-wrap::-webkit-scrollbar, .summary-scroll::-webkit-scrollbar, .ai-answer::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.table-wrap::-webkit-scrollbar-track, .summary-scroll::-webkit-scrollbar-track, .ai-answer::-webkit-scrollbar-track {
+  background: transparent;
+}
+.table-wrap::-webkit-scrollbar-thumb, .summary-scroll::-webkit-scrollbar-thumb, .ai-answer::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 20px;
+}
+.table-wrap::-webkit-scrollbar-thumb:hover, .summary-scroll::-webkit-scrollbar-thumb:hover, .ai-answer::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
 /* ---------- Summary tables ---------- */
 .section-stack { display: flex; flex-direction: column; gap: 18px; }
 .summary-scroll { overflow: auto; max-height: 440px; border-radius: var(--radius-sm); }
@@ -446,7 +493,31 @@ table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 /* ---------- POD detail ---------- */
 .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 #searchBox { flex: 1; min-width: 220px; }
-.table-hint { font-size: 11.5px; margin-top: -6px; }
+.table-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 6px 13px 6px 8px;
+}
+.table-hint-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px; height: 15px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--s1);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  font-style: normal;
+}
 .extra-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .extra-filter { display: flex; align-items: center; gap: 6px; }
 .extra-filter-label { font-size: 11.5px; color: var(--muted); font-weight: 500; white-space: nowrap; }
@@ -474,7 +545,27 @@ table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 #podTable tbody tr.pod-row:hover td { background: var(--surface-2); }
 #podTable tbody tr.pod-row.expanded td { background: var(--surface-2); }
 #podTable td.expand-toggle {
-  color: var(--muted); text-align: center; width: 1%; padding-left: 10px; padding-right: 4px;
+  text-align: center; width: 1%; padding-left: 8px; padding-right: 2px;
+}
+.expand-btn {
+  background: none;
+  border: none;
+  padding: 3px 7px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  border-radius: 5px;
+}
+.expand-btn:hover { color: var(--ink); background: var(--grid); }
+
+#podTable tr.empty-state:hover td { background: var(--surface); }
+#podTable tr.empty-state td {
+  text-align: center;
+  color: var(--muted);
+  padding: 30px 16px;
+  cursor: default;
+  white-space: normal;
 }
 #podTable tr.pod-detail-row td {
   background: var(--surface-2);

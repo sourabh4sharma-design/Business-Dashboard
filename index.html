@@ -20,8 +20,8 @@
   <div class="topbar-right">
     <span id="busy" class="spinner" hidden></span>
     <span class="live"><span id="liveDot" class="live-dot"></span><span id="lastUpdated" class="muted"></span></span>
-    <button id="pauseBtn" class="btn btn-ghost">Pause</button>
-    <button id="refreshBtn" class="btn btn-primary">Refresh</button>
+    <button id="pauseBtn" class="btn btn-ghost">⏸ Pause</button>
+    <button id="refreshBtn" class="btn btn-primary">⟳ Refresh</button>
   </div>
 </header>
 
@@ -46,7 +46,7 @@
       <div class="loading-note" id="loadingNote" hidden>This POD contains full transaction-level records; loading can take up to a minute for larger PODs.</div>
     </div>
   </div>
-  <div id="errorMsg" class="error-box" hidden></div>
+  <div id="errorMsg" class="error-box" hidden role="alert"></div>
 
   <!-- ===== Overview ===== -->
   <section id="overviewView" class="view" hidden>
@@ -101,12 +101,12 @@
     <div id="podCards" class="kpi-row"></div>
     <div id="podSummary" class="pod-panels"></div>
     <div class="toolbar">
-      <input id="searchBox" type="text" placeholder="Search all fields…">
-      <select id="statusFilter"><option value="">All statuses</option></select>
+      <input id="searchBox" type="text" placeholder="Search all fields…" aria-label="Search all fields">
+      <select id="statusFilter" aria-label="Filter by status"><option value="">All statuses</option></select>
       <div id="extraFilters" class="extra-filters"></div>
-      <span id="rowCount" class="muted"></span>
+      <span id="rowCount" class="muted" aria-live="polite"></span>
     </div>
-    <div class="table-hint muted">Click a row to view Unique Number, Invoice, Document Number, Service, Material Description &amp; PO.</div>
+    <div class="table-hint"><span class="table-hint-icon" aria-hidden="true">i</span>Click a row to view Unique Number, Invoice, Document Number, Service, Material Description &amp; PO.</div>
     <div class="table-wrap">
       <table id="podTable">
         <thead></thead>
