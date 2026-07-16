@@ -56,6 +56,18 @@
 /* The hidden attribute must beat class-level display:flex/grid rules. */
 [hidden] { display: none !important; }
 
+/* Top loading progress bar */
+.load-bar {
+  position: fixed;
+  top: 0; left: 0;
+  height: 3px;
+  width: 0%;
+  background: var(--s1);
+  box-shadow: 0 0 8px rgba(42, 120, 214, 0.5);
+  z-index: 100;
+  transition: width 0.25s ease;
+}
+
 html { -webkit-text-size-adjust: 100%; }
 
 body {

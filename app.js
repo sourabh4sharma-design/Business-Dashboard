@@ -9,7 +9,9 @@
 const APPS_SCRIPT_URL =
   "https://script.google.com/a/macros/paytm.com/s/AKfycbx9lMG4oCmvDNVCUeDY8JdALLsMK5e4iV5Wcv4GqwebvJXfpRsojJeHvcBX_p3qmUpO/exec";
 const APPS_SCRIPT_KEY = "eFZYQGevyYbeiRxswugbkF7YI4BLAcN3";
-const REFRESH_INTERVAL_MS = 7000;
+const REFRESH_INTERVAL_MS = 7000; // Overview auto-refresh cadence
+const POD_REFRESH_MS = 30000; // POD auto-refresh cadence (data is large)
+const PAGE_SIZE = 1000; // rows fetched per JSONP chunk
 
 // Gemini AI (Overview "Ask about this data"). Paste the API key here once
 // you have it. NOTE: this file is public, so the key will be visible in
@@ -40,6 +42,7 @@ let lastPodRenderKey = null;
 let summaryRowsCache = null; // last Summary rows, for the AI panel
 let loadSeq = 0; // guards against overlapping/stale loads
 let inFlight = false; // a fetch is currently running
+let lastBgAt = 0; // timestamp of the last completed load
 const rendered = { overview: false, pod: false };
 
 // ---- Number helpers ------------------------------------------------------
@@ -96,6 +99,18 @@ function setBusy(on) {
   if (b) b.hidden = !on;
 }
 
+function setProgress(frac) {
+  const bar = document.getElementById("loadBar");
+  if (!bar) return;
+  if (frac === null || frac === undefined) {
+    bar.hidden = true;
+    bar.style.width = "0%";
+    return;
+  }
+  bar.hidden = false;
+  bar.style.width = Math.round(frac * 100) + "%";
+}
+
 function findColumnIndex(headerRow, keyword) {
   const kw = keyword.toLowerCase();
   return headerRow.findIndex((h) => (h || "").toLowerCase().includes(kw));
@@ -134,10 +149,31 @@ function jsonpFetch(url, params) {
   });
 }
 
-async function fetchTabRows(sheetName) {
-  const data = await jsonpFetch(APPS_SCRIPT_URL, { key: APPS_SCRIPT_KEY, tab: sheetName });
-  if (data && data.error) throw new Error(data.error);
-  return (data && data.values) || [];
+// Fetch a whole tab in PAGE_SIZE chunks so large POD sheets don't time out
+// and we can report real progress. Backward-compatible with an Apps Script
+// that ignores start/limit (it returns everything in the first chunk).
+async function fetchTabRows(sheetName, onProgress) {
+  let start = 1;
+  let total = null;
+  let all = [];
+  // Safety cap: 200 chunks (200k rows) prevents any infinite loop.
+  for (let guard = 0; guard < 200; guard++) {
+    const data = await jsonpFetch(APPS_SCRIPT_URL, {
+      key: APPS_SCRIPT_KEY,
+      tab: sheetName,
+      start: String(start),
+      limit: String(PAGE_SIZE),
+    });
+    if (data && data.error) throw new Error(data.error);
+    const vals = (data && data.values) || [];
+    total = data && data.total != null ? Number(data.total) : all.length + vals.length;
+    all = all.concat(vals);
+    if (onProgress && total > 0) onProgress(Math.min(1, all.length / total));
+    start += vals.length;
+    if (vals.length === 0 || all.length >= total || vals.length < PAGE_SIZE) break;
+  }
+  if (onProgress) onProgress(1);
+  return all;
 }
 
 // ============================================================
@@ -835,8 +871,23 @@ async function loadCurrent(opts = {}) {
     }
   }
 
+  // Progress UI only for foreground loads (never flash it on background ticks).
+  const onProgress = background
+    ? null
+    : (frac) => {
+        if (seq !== loadSeq) return;
+        setProgress(frac);
+        const pct = Math.round(frac * 100);
+        if (firstPaint) {
+          const t = loadingEl.querySelector("span:last-child");
+          if (t) t.textContent = `Loading data… ${pct}%`;
+        } else {
+          lastUpdatedEl.textContent = `Loading… ${pct}%`;
+        }
+      };
+
   try {
-    const rows = await fetchTabRows(key);
+    const rows = await fetchTabRows(key, onProgress);
     if (seq !== loadSeq) return; // a newer load superseded this one
 
     const snapshot = JSON.stringify(rows);
@@ -862,9 +913,13 @@ async function loadCurrent(opts = {}) {
   } finally {
     if (seq === loadSeq) {
       inFlight = false;
+      lastBgAt = Date.now();
       if (!background) {
         loadingEl.hidden = true;
         setBusy(false);
+        setProgress(null);
+        const t = loadingEl.querySelector("span:last-child");
+        if (t) t.textContent = "Loading data…";
       }
     }
   }
@@ -884,11 +939,14 @@ let autoRefreshPaused = false;
 
 function startAutoRefresh() {
   if (refreshTimer) clearInterval(refreshTimer);
+  // Tick often, but only actually refresh once the view's cadence has elapsed
+  // (Overview is light and refreshes at 7s; POD data is heavy — every 30s).
   refreshTimer = setInterval(() => {
-    if (!autoRefreshPaused && !inFlight && document.visibilityState === "visible") {
-      loadCurrent({ background: true });
-    }
-  }, REFRESH_INTERVAL_MS);
+    if (autoRefreshPaused || inFlight || document.visibilityState !== "visible") return;
+    const gap = currentView === "overview" ? REFRESH_INTERVAL_MS : POD_REFRESH_MS;
+    if (Date.now() - lastBgAt < gap) return;
+    loadCurrent({ background: true });
+  }, 2000);
 }
 
 function setPaused(paused) {
