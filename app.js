@@ -893,10 +893,14 @@ async function loadCurrent(opts = {}) {
   const seq = ++loadSeq;
   inFlight = true;
   const loadingEl = document.getElementById("loadingMsg");
+  const loadingPctEl = document.getElementById("loadingPct");
+  const loadingLabelEl = document.getElementById("loadingLabel");
   const errorEl = document.getElementById("errorMsg");
   const lastUpdatedEl = document.getElementById("lastUpdated");
 
-  // First paint of a view shows the big centered spinner; after that we keep
+  const loadTitle = currentView === "overview" ? "Overview" : PODS[currentPodIndex].label;
+
+  // First paint of a view shows the big centered card; after that we keep
   // the current content on screen and only show a small "busy" spinner, so a
   // refresh or a view/POD switch never blanks the dashboard.
   const firstPaint = !rendered[currentView];
@@ -905,6 +909,8 @@ async function loadCurrent(opts = {}) {
     if (firstPaint) {
       document.getElementById("overviewView").hidden = true;
       document.getElementById("podView").hidden = true;
+      loadingPctEl.textContent = "";
+      loadingLabelEl.textContent = "Loading " + loadTitle + "…";
       loadingEl.hidden = false;
     } else {
       setBusy(true);
@@ -919,8 +925,7 @@ async function loadCurrent(opts = {}) {
         setProgress(frac);
         const pct = Math.round(frac * 100);
         if (firstPaint) {
-          const t = loadingEl.querySelector("span:last-child");
-          if (t) t.textContent = `Loading data… ${pct}%`;
+          loadingPctEl.textContent = pct + "%";
         } else {
           lastUpdatedEl.textContent = `Loading… ${pct}%`;
         }
@@ -958,8 +963,6 @@ async function loadCurrent(opts = {}) {
         loadingEl.hidden = true;
         setBusy(false);
         setProgress(null);
-        const t = loadingEl.querySelector("span:last-child");
-        if (t) t.textContent = "Loading data…";
       }
     }
   }

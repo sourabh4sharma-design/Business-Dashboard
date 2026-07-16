@@ -37,7 +37,13 @@
 </nav>
 
 <main id="app">
-  <div id="loadingMsg" class="loading-row muted"><span class="spinner"></span><span>Loading data…</span></div>
+  <div id="loadingMsg" class="loading-center" hidden>
+    <div class="loading-card">
+      <span class="spinner spinner-lg"></span>
+      <div class="loading-pct" id="loadingPct">&nbsp;</div>
+      <div class="loading-label" id="loadingLabel">Loading data…</div>
+    </div>
+  </div>
   <div id="errorMsg" class="error-box" hidden></div>
 
   <!-- ===== Overview ===== -->
