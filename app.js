@@ -227,7 +227,7 @@ async function fetchTabRows(sheetName, onProgress) {
         start: String(start),
         limit: String(PAGE_SIZE),
       },
-      30000
+      90000
     );
     if (data && data.error) throw new Error(data.error);
     const vals = (data && data.values) || [];
