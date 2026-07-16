@@ -1,7 +1,7 @@
 // ============================================================
 // Collections Dashboard
 // Private, paytm.com-restricted Google Sheet → Apps Script (JSONP).
-// Two views: Overview (Summary tab, many tables) and POD Details
+// Two views: Overview (Summary tab, many tables) and POD Level Details
 // (one POD sheet at a time, chosen from a dropdown). Auto-refreshes
 // in place every REFRESH_INTERVAL_MS, only touching the DOM when the
 // underlying data actually changed.
@@ -119,26 +119,44 @@ function stopLoadingDots() {
   if (el) el.textContent = "";
 }
 
-let pctAnimFrame = null;
+let pctRafHandle = null;
 let pctDisplayed = 0;
-// Smoothly tweens the big loading percentage toward `target` instead of
-// snapping between chunk-completion jumps, so the number keeps moving.
-function animateLoadingPct(target) {
+let pctTarget = 0;
+const PCT_SPEED = 45; // %/second — one constant climb rate, no easing/deceleration
+
+// Chunk-completion progress arrives in uneven bursts; rather than tweening
+// toward each new value (which restarts and looks like a series of jumps),
+// a single persistent loop chases the latest target at a fixed speed, so the
+// big loading percentage always climbs at the same steady rate.
+function startLoadingPct() {
+  pctDisplayed = 0;
+  pctTarget = 0;
   const el = document.getElementById("loadingPct");
-  if (!el) return;
-  if (pctAnimFrame) cancelAnimationFrame(pctAnimFrame);
-  const start = pctDisplayed;
-  const startTime = performance.now();
-  const duration = 500;
+  if (el) el.textContent = "";
+  if (pctRafHandle) cancelAnimationFrame(pctRafHandle);
+  let last = performance.now();
   function step(now) {
-    const t = Math.min(1, (now - startTime) / duration);
-    const eased = 1 - Math.pow(1 - t, 2);
-    const val = Math.round(start + (target - start) * eased);
-    el.textContent = val + "%";
-    pctDisplayed = val;
-    if (t < 1) pctAnimFrame = requestAnimationFrame(step);
+    const dt = (now - last) / 1000;
+    last = now;
+    if (pctDisplayed < pctTarget) {
+      pctDisplayed = Math.min(pctTarget, pctDisplayed + PCT_SPEED * dt);
+      const val = Math.round(pctDisplayed);
+      if (el) el.textContent = val + "%";
+      const fillEl = document.getElementById("loadingFill");
+      if (fillEl) fillEl.style.width = val + "%";
+    }
+    pctRafHandle = requestAnimationFrame(step);
   }
-  pctAnimFrame = requestAnimationFrame(step);
+  pctRafHandle = requestAnimationFrame(step);
+}
+
+function setLoadingPctTarget(target) {
+  pctTarget = Math.max(pctTarget, target);
+}
+
+function stopLoadingPct() {
+  if (pctRafHandle) cancelAnimationFrame(pctRafHandle);
+  pctRafHandle = null;
 }
 
 function setProgress(frac) {
@@ -1122,13 +1140,12 @@ async function loadCurrent(opts = {}) {
     if (firstPaint) {
       document.getElementById("overviewView").hidden = true;
       document.getElementById("podView").hidden = true;
-      pctDisplayed = 0;
-      document.getElementById("loadingPct").textContent = "";
       loadingFillEl.style.width = "0%";
-      loadingLabelEl.textContent = "Loading " + loadTitle;
+      loadingLabelEl.textContent = isPodLoad ? `Loading POD Level Details — ${loadTitle}` : "Loading " + loadTitle;
       loadingNoteEl.hidden = !isPodLoad;
       loadingEl.hidden = false;
       startLoadingDots();
+      startLoadingPct();
     } else {
       setBusy(true);
     }
@@ -1142,8 +1159,7 @@ async function loadCurrent(opts = {}) {
         setProgress(frac);
         const pct = Math.round(frac * 100);
         if (firstPaint) {
-          animateLoadingPct(pct);
-          loadingFillEl.style.width = pct + "%";
+          setLoadingPctTarget(pct);
         } else {
           lastUpdatedEl.textContent = `Loading… ${pct}%`;
         }
@@ -1182,6 +1198,7 @@ async function loadCurrent(opts = {}) {
         setBusy(false);
         setProgress(null);
         stopLoadingDots();
+        stopLoadingPct();
       }
     }
   }
