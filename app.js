@@ -115,7 +115,8 @@ function findColumnIndex(headerRow, keyword) {
 }
 
 // ---- Data fetch (JSONP) --------------------------------------------------
-function jsonpFetch(url, params) {
+function jsonpFetch(url, params, timeoutMs) {
+  const timeout = timeoutMs || 15000;
   return new Promise((resolve, reject) => {
     const cbName = "jsonp_cb_" + Math.random().toString(36).slice(2);
     const script = document.createElement("script");
@@ -143,7 +144,7 @@ function jsonpFetch(url, params) {
         reject(new Error("Timed out. Make sure you're signed into your paytm.com Google account."));
         cleanup();
       }
-    }, 15000);
+    }, timeout);
   });
 }
 
@@ -959,7 +960,7 @@ async function askGemini(question) {
   answerEl.hidden = false;
   answerEl.textContent = "Thinking…";
   try {
-    const data = await jsonpFetch(APPS_SCRIPT_URL, { key: APPS_SCRIPT_KEY, ai: question });
+    const data = await jsonpFetch(APPS_SCRIPT_URL, { key: APPS_SCRIPT_KEY, ai: question }, 45000);
     if (data && data.error) throw new Error(data.error);
     answerEl.textContent = (data && data.answer ? data.answer : "").trim() || "No answer returned.";
   } catch (err) {
