@@ -32,7 +32,11 @@ const PODS = [
 let currentView = "overview"; // "overview" | "pod"
 let currentPodIndex = 0;
 let podRows = [];
-let podColumns = [];
+let podColumns = []; // every column from the sheet (used for search + summary panels)
+let podMainColumns = []; // podColumns minus the detail fields — what the main table shows
+let podDetailFields = []; // [{label, col}] shown only when a row is expanded
+let expandedRowKeys = new Set(); // row keys currently expanded, persists across refresh ticks
+let extraFilterState = {}; // column -> selected value, for the auto-generated filter dropdowns
 let sortCol = null;
 let sortDir = 1;
 let lastSnapshotByKey = {};
@@ -657,6 +661,108 @@ function podFindCol(columns, ...keywords) {
   return null;
 }
 
+// The reference fields that only show up in a row's expanded detail panel —
+// kept out of the main table so it stays scannable. Matched by keyword since
+// the sheet's exact header text can vary.
+const DETAIL_FIELD_SPECS = [
+  { label: "Unique Number", keywords: ["unique number", "unique no", "uid"] },
+  { label: "Invoice", keywords: ["invoice number", "invoice no", "invoice"] },
+  { label: "Document Number", keywords: ["document number", "doc number", "document no"] },
+  { label: "Service", keywords: ["service"] },
+  { label: "Material Description", keywords: ["material description", "material desc"] },
+  { label: "PO", keywords: ["po number", "po no", "purchase order", "po"] },
+];
+
+function normalizeHeader(s) {
+  return " " + String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() + " ";
+}
+function headerMatchesKeyword(header, keyword) {
+  return normalizeHeader(header).includes(normalizeHeader(keyword));
+}
+
+// Resolve each spec to at most one real column, first-match-wins, so no
+// column is claimed by two detail fields.
+function pickDetailFields(columns) {
+  const used = new Set();
+  const fields = [];
+  DETAIL_FIELD_SPECS.forEach((spec) => {
+    for (const kw of spec.keywords) {
+      const found = columns.find((c) => !used.has(c) && headerMatchesKeyword(c, kw));
+      if (found) {
+        used.add(found);
+        fields.push({ label: spec.label, col: found });
+        break;
+      }
+    }
+  });
+  return fields;
+}
+
+// Any remaining (main-table) column whose values cluster into a small,
+// bounded set of options is worth a filter dropdown — this is what makes
+// "as many useful filters as possible" adapt to whatever the sheet has.
+const MAX_FILTER_UNIQUE = 30;
+const MAX_EXTRA_FILTERS = 6;
+function computeFilterableColumns(rows, mainColumns, excludeCol) {
+  const candidates = [];
+  mainColumns.forEach((col) => {
+    if (col === excludeCol) return;
+    const values = new Set();
+    for (const r of rows) {
+      const v = (r[col] || "").toString().trim();
+      if (v) values.add(v);
+      if (values.size > MAX_FILTER_UNIQUE) break;
+    }
+    if (values.size >= 2 && values.size <= MAX_FILTER_UNIQUE) {
+      candidates.push({ col, values: [...values].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })) });
+    }
+  });
+  return candidates.slice(0, MAX_EXTRA_FILTERS);
+}
+
+function renderExtraFilters(rows, mainColumns, excludeCol) {
+  const host = document.getElementById("extraFilters");
+  if (!host) return;
+  const filterable = computeFilterableColumns(rows, mainColumns, excludeCol);
+  const keepCols = new Set(filterable.map((f) => f.col));
+  Object.keys(extraFilterState).forEach((c) => {
+    if (!keepCols.has(c)) delete extraFilterState[c];
+  });
+
+  host.innerHTML = "";
+  filterable.forEach(({ col, values }) => {
+    const wrap = document.createElement("label");
+    wrap.className = "extra-filter";
+    const span = document.createElement("span");
+    span.className = "extra-filter-label";
+    span.textContent = col;
+    const select = document.createElement("select");
+    select.innerHTML =
+      `<option value="">All ${escapeHtml(col)}</option>` +
+      values.map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+    const prev = extraFilterState[col];
+    if (prev && values.includes(prev)) select.value = prev;
+    select.addEventListener("change", () => {
+      extraFilterState[col] = select.value;
+      renderPodTable();
+    });
+    wrap.appendChild(span);
+    wrap.appendChild(select);
+    host.appendChild(wrap);
+  });
+}
+
+// A stable per-transaction key so expand/collapse state survives refresh
+// ticks. Prefers the Unique Number detail field; falls back to a composite
+// of the other detail fields, then row position as a last resort.
+function rowKey(r, idx) {
+  const uf = podDetailFields.find((f) => f.label === "Unique Number");
+  if (uf && String(r[uf.col] ?? "").trim()) return "u:" + String(r[uf.col]).trim();
+  const composite = podDetailFields.map((f) => String(r[f.col] ?? "").trim()).join("|");
+  if (composite.replace(/\|/g, "")) return "c:" + composite;
+  return "i:" + idx;
+}
+
 const AGING_BUCKETS = [
   { key: "Under credit", re: /under\s*credit/i, color: "--s1" },
   { key: "1–30 days", re: /1\s*-\s*30/, color: "--good" },
@@ -782,8 +888,15 @@ function cellContent(r, c, statusColName) {
   return { html: String(val), isHtml: false };
 }
 
-function buildRow(r, columns, statusColName) {
+// Main row: a leading expand toggle cell, then one cell per main column.
+function buildMainRow(r, columns, statusColName, key, expanded) {
   const tr = document.createElement("tr");
+  tr.className = "pod-row" + (expanded ? " expanded" : "");
+  tr.dataset.key = key;
+  const toggleTd = document.createElement("td");
+  toggleTd.className = "expand-toggle";
+  toggleTd.textContent = expanded ? "▾" : "▸";
+  tr.appendChild(toggleTd);
   columns.forEach((c) => {
     const td = document.createElement("td");
     const { html, isHtml } = cellContent(r, c, statusColName);
@@ -791,7 +904,34 @@ function buildRow(r, columns, statusColName) {
     else td.textContent = html;
     tr.appendChild(td);
   });
+  tr.addEventListener("click", () => toggleExpand(key));
   return tr;
+}
+
+// Sub-row shown only while expanded: the reference/detail fields as
+// label:value pairs, spanning under the main row's columns.
+function buildDetailRow(r, detailFields, columns) {
+  const tr = document.createElement("tr");
+  tr.className = "pod-detail-row";
+  const td = document.createElement("td");
+  td.colSpan = columns.length + 1;
+  const items = detailFields
+    .map(
+      (f) =>
+        `<div class="dd-item"><span class="dd-label">${escapeHtml(f.label)}</span><span class="dd-value">${
+          escapeHtml(String(r[f.col] ?? "").trim() || "—")
+        }</span></div>`
+    )
+    .join("");
+  td.innerHTML = `<div class="pod-detail-grid">${items || '<span class="muted">No additional details</span>'}</div>`;
+  tr.appendChild(td);
+  return tr;
+}
+
+function toggleExpand(key) {
+  if (expandedRowKeys.has(key)) expandedRowKeys.delete(key);
+  else expandedRowKeys.add(key);
+  renderPodTable();
 }
 
 function flashCell(td) {
@@ -801,9 +941,9 @@ function flashCell(td) {
 }
 
 function updateRowInPlace(tr, r, columns, statusColName) {
-  const cells = tr.children;
+  const cells = tr.children; // cells[0] is the expand toggle, columns start at 1
   columns.forEach((c, i) => {
-    const td = cells[i];
+    const td = cells[i + 1];
     if (!td) return;
     const { html, isHtml } = cellContent(r, c, statusColName);
     if (isHtml) {
@@ -827,6 +967,10 @@ function renderPodTable() {
 
   let filtered = podRows.filter((r) => {
     if (statusVal && statusCol && (r[statusCol] || "").trim() !== statusVal) return false;
+    for (const col in extraFilterState) {
+      const val = extraFilterState[col];
+      if (val && (r[col] || "").trim() !== val) return false;
+    }
     if (!searchTerm) return true;
     return podColumns.some((c) => (r[c] || "").toLowerCase().includes(searchTerm));
   });
@@ -844,22 +988,29 @@ function renderPodTable() {
 
   document.getElementById("rowCount").textContent = `${filtered.length} of ${podRows.length} rows`;
 
-  // Rebuild the whole table when the POD, columns, or sort change; otherwise
-  // diff cells in place so the periodic refresh doesn't flicker.
-  const renderKey = currentPodIndex + "" + podColumns.join("") + sortCol + sortDir + statusVal + searchTerm;
+  // Rebuild the whole table when the POD, columns, sort, filters, or expanded
+  // rows change; otherwise diff cells in place so the periodic refresh
+  // doesn't flicker.
+  const extraFilterKey = Object.keys(extraFilterState)
+    .map((c) => c + "=" + extraFilterState[c])
+    .join("&");
+  const expandedKey = [...expandedRowKeys].sort().join(",");
+  const renderKey =
+    currentPodIndex + "" + podMainColumns.join("") + sortCol + sortDir + statusVal + searchTerm + extraFilterKey + expandedKey;
   const structuralChange = lastPodRenderKey !== renderKey;
   lastPodRenderKey = renderKey;
 
   const statusColName = statusCol;
   const visibleRows = filtered.slice(0, 2000);
   const tbody = document.querySelector("#podTable tbody");
-  const existingTrs = tbody.querySelectorAll("tr");
+  const existingMainTrs = tbody.querySelectorAll("tr.pod-row");
 
-  if (structuralChange || existingTrs.length !== visibleRows.length) {
+  if (structuralChange || existingMainTrs.length !== visibleRows.length) {
     const thead = document.querySelector("#podTable thead");
     thead.innerHTML = "";
     const headRow = document.createElement("tr");
-    podColumns.forEach((c) => {
+    headRow.appendChild(document.createElement("th")); // expand-toggle column
+    podMainColumns.forEach((c) => {
       const th = document.createElement("th");
       th.textContent = c + (sortCol === c ? (sortDir === 1 ? " ▲" : " ▼") : "");
       th.addEventListener("click", () => {
@@ -872,9 +1023,23 @@ function renderPodTable() {
     thead.appendChild(headRow);
 
     tbody.innerHTML = "";
-    visibleRows.forEach((r) => tbody.appendChild(buildRow(r, podColumns, statusColName)));
+    visibleRows.forEach((r, idx) => {
+      const key = rowKey(r, idx);
+      const expanded = expandedRowKeys.has(key);
+      tbody.appendChild(buildMainRow(r, podMainColumns, statusColName, key, expanded));
+      if (expanded) tbody.appendChild(buildDetailRow(r, podDetailFields, podMainColumns));
+    });
   } else {
-    visibleRows.forEach((r, i) => updateRowInPlace(existingTrs[i], r, podColumns, statusColName));
+    visibleRows.forEach((r, i) => {
+      const tr = existingMainTrs[i];
+      updateRowInPlace(tr, r, podMainColumns, statusColName);
+      if (expandedRowKeys.has(tr.dataset.key)) {
+        const detailTr = tr.nextElementSibling;
+        if (detailTr && detailTr.classList.contains("pod-detail-row")) {
+          detailTr.innerHTML = buildDetailRow(r, podDetailFields, podMainColumns).innerHTML;
+        }
+      }
+    });
   }
 
   tableWrap.scrollTop = prevScrollTop;
@@ -900,6 +1065,10 @@ function renderPod(rows) {
       return obj;
     });
 
+  podDetailFields = pickDetailFields(podColumns);
+  const detailColSet = new Set(podDetailFields.map((f) => f.col));
+  podMainColumns = podColumns.filter((c) => !detailColSet.has(c));
+
   const statusCol = renderPodCards(podRows, podColumns);
   renderPodSummary(podRows, podColumns);
 
@@ -918,6 +1087,7 @@ function renderPod(rows) {
     if (uniqueVals.includes(previousSelection)) statusFilter.value = previousSelection;
   }
 
+  renderExtraFilters(podRows, podMainColumns, statusCol);
   renderPodTable();
 }
 
@@ -1119,6 +1289,7 @@ function init() {
     currentPodIndex = Number(podSelect.value);
     sortCol = null;
     sortDir = 1;
+    expandedRowKeys.clear();
     loadCurrent({ background: false });
   });
 
