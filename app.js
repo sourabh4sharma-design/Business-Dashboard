@@ -482,8 +482,6 @@ function buildSummaryCard(section) {
 
   const scroll = document.createElement("div");
   scroll.className = "summary-scroll";
-  const table = document.createElement("table");
-  table.className = "summary-table";
 
   const header = section.header || [];
   // Drop the duplicated label column (e.g. "Status","Status").
@@ -494,52 +492,95 @@ function buildSummaryCard(section) {
   // Per-column percent flag (columns whose header contains "%").
   const pctCol = keep.map((i) => /%/.test(String(header[i] ?? "")));
 
-  if (header.length) {
-    const thead = document.createElement("thead");
-    const tr = document.createElement("tr");
-    keep.forEach((i) => {
-      const th = document.createElement("th");
-      th.textContent = String(header[i] ?? "").replace(/\n/g, " ").trim();
-      tr.appendChild(th);
-    });
-    thead.appendChild(tr);
-    table.appendChild(thead);
-  }
-
-  const tbody = document.createElement("tbody");
-  section.rows.forEach((r) => {
-    const label = firstText(r);
-    const isTotal = /^total/i.test(label) || label === "";
-    const isAux = /salience|cohort|% collection/i.test(label);
-    const tr = document.createElement("tr");
-    if (isTotal) tr.className = "is-total";
-    else if (isAux) tr.className = "is-aux";
-
-    keep.forEach((colIdx, k) => {
-      const td = document.createElement("td");
-      const raw = r[colIdx];
-      if (k === 0) {
-        td.textContent = raw === undefined || raw === "" ? (isTotal ? "Total" : "") : String(raw);
-      } else {
-        const n = parseNumber(raw);
-        if (n === null) {
-          td.textContent = raw === undefined ? "" : String(raw).trim() === "#DIV/0!" ? "—" : String(raw);
-        } else if (pctCol[k] || isAux) {
-          td.textContent = fmtPercent(n);
-        } else {
-          td.textContent = fmtLakh(n);
-          if (n < 0) td.className = "num-neg";
-        }
-      }
-      tr.appendChild(td);
-    });
-    tbody.appendChild(tr);
-  });
-  table.appendChild(tbody);
-
+  const table = buildSortableSummaryTable(header, keep, pctCol, section.rows);
   scroll.appendChild(table);
   card.appendChild(scroll);
   return card;
+}
+
+function summaryCellText(r, colIdx, k, pctCol, isTotal, isAux) {
+  const raw = r[colIdx];
+  if (k === 0) {
+    return { text: raw === undefined || raw === "" ? (isTotal ? "Total" : "") : String(raw), neg: false };
+  }
+  const n = parseNumber(raw);
+  if (n === null) {
+    return { text: raw === undefined ? "" : String(raw).trim() === "#DIV/0!" ? "—" : String(raw), neg: false };
+  }
+  if (pctCol[k] || isAux) return { text: fmtPercent(n), neg: false };
+  return { text: fmtLakh(n), neg: n < 0 };
+}
+
+// Builds a <table> whose headers sort the rows (numeric-aware) on click,
+// re-rendering the body in place; column 0 (the label) sorts alphabetically.
+function buildSortableSummaryTable(header, keep, pctCol, rows) {
+  const table = document.createElement("table");
+  table.className = "summary-table";
+  const thead = document.createElement("thead");
+  const tbody = document.createElement("tbody");
+  table.appendChild(thead);
+  table.appendChild(tbody);
+
+  let sortK = null;
+  let sortDir = 1;
+
+  function renderHead() {
+    thead.innerHTML = "";
+    if (!header.length) return;
+    const tr = document.createElement("tr");
+    keep.forEach((i, k) => {
+      const th = document.createElement("th");
+      const label = String(header[i] ?? "").replace(/\n/g, " ").trim();
+      th.textContent = label + (sortK === k ? (sortDir === 1 ? " ▲" : " ▼") : "");
+      th.addEventListener("click", () => {
+        sortDir = sortK === k ? -sortDir : 1;
+        sortK = k;
+        renderHead();
+        renderBody();
+      });
+      tr.appendChild(th);
+    });
+    thead.appendChild(tr);
+  }
+
+  function renderBody() {
+    let ordered = rows;
+    if (sortK !== null) {
+      const colIdx = keep[sortK];
+      ordered = [...rows].sort((a, b) => {
+        const av = a[colIdx];
+        const bv = b[colIdx];
+        const an = parseNumber(av);
+        const bn = parseNumber(bv);
+        let cmp;
+        if (sortK !== 0 && an !== null && bn !== null) cmp = an - bn;
+        else cmp = String(av ?? "").localeCompare(String(bv ?? ""));
+        return cmp * sortDir;
+      });
+    }
+    tbody.innerHTML = "";
+    ordered.forEach((r) => {
+      const label = firstText(r);
+      const isTotal = /^total/i.test(label) || label === "";
+      const isAux = /salience|cohort|% collection/i.test(label);
+      const tr = document.createElement("tr");
+      if (isTotal) tr.className = "is-total";
+      else if (isAux) tr.className = "is-aux";
+
+      keep.forEach((colIdx, k) => {
+        const td = document.createElement("td");
+        const { text, neg } = summaryCellText(r, colIdx, k, pctCol, isTotal, isAux);
+        td.textContent = text;
+        if (neg) td.className = "num-neg";
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  renderHead();
+  renderBody();
+  return table;
 }
 
 // ============================================================
@@ -955,6 +996,42 @@ function setPaused(paused) {
 }
 
 // ---- Gemini AI (answers only from the Summary tab) -----------------------
+function escapeHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Minimal, safe Markdown → HTML for Gemini's answers: escapes everything
+// first (so no raw HTML/script can slip through), then only recognizes
+// **bold**, "* "/"- " bullet lists, and paragraph breaks.
+function mdToHtml(raw) {
+  const lines = escapeHtml(raw).split("\n");
+  let html = "";
+  let inList = false;
+  const closeList = () => {
+    if (inList) {
+      html += "</ul>";
+      inList = false;
+    }
+  };
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (/^[*-]\s+/.test(trimmed)) {
+      if (!inList) {
+        html += "<ul>";
+        inList = true;
+      }
+      html += "<li>" + trimmed.replace(/^[*-]\s+/, "") + "</li>";
+    } else if (trimmed === "") {
+      closeList();
+    } else {
+      closeList();
+      html += "<p>" + trimmed + "</p>";
+    }
+  });
+  closeList();
+  return html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+
 async function askGemini(question) {
   const answerEl = document.getElementById("aiAnswer");
   answerEl.hidden = false;
@@ -962,7 +1039,8 @@ async function askGemini(question) {
   try {
     const data = await jsonpFetch(APPS_SCRIPT_URL, { key: APPS_SCRIPT_KEY, ai: question }, 45000);
     if (data && data.error) throw new Error(data.error);
-    answerEl.textContent = (data && data.answer ? data.answer : "").trim() || "No answer returned.";
+    const answer = (data && data.answer ? data.answer : "").trim();
+    answerEl.innerHTML = answer ? mdToHtml(answer) : "No answer returned.";
   } catch (err) {
     answerEl.textContent = "AI error: " + (err && err.message ? err.message : err);
   }
