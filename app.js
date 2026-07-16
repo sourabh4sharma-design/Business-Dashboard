@@ -219,12 +219,16 @@ async function fetchTabRows(sheetName, onProgress) {
   let all = [];
   // Safety cap: 200 chunks (200k rows) prevents any infinite loop.
   for (let guard = 0; guard < 200; guard++) {
-    const data = await jsonpFetch(APPS_SCRIPT_URL, {
-      key: APPS_SCRIPT_KEY,
-      tab: sheetName,
-      start: String(start),
-      limit: String(PAGE_SIZE),
-    });
+    const data = await jsonpFetch(
+      APPS_SCRIPT_URL,
+      {
+        key: APPS_SCRIPT_KEY,
+        tab: sheetName,
+        start: String(start),
+        limit: String(PAGE_SIZE),
+      },
+      30000
+    );
     if (data && data.error) throw new Error(data.error);
     const vals = (data && data.values) || [];
     total = data && data.total != null ? Number(data.total) : all.length + vals.length;
