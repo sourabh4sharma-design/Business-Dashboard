@@ -13,11 +13,9 @@ const REFRESH_INTERVAL_MS = 7000; // Overview auto-refresh cadence
 const POD_REFRESH_MS = 30000; // POD auto-refresh cadence (data is large)
 const PAGE_SIZE = 1000; // rows fetched per JSONP chunk
 
-// Gemini AI (Overview "Ask about this data"). Paste the API key here once
-// you have it. NOTE: this file is public, so the key will be visible in
-// source — restrict it in Google AI Studio to the github.io referrer.
-const GEMINI_API_KEY = "";
-const GEMINI_MODEL = "gemini-2.0-flash";
+// Gemini AI (Overview "Ask about this data") is proxied through the Apps
+// Script (server-side), so the Gemini API key lives in the Apps Script and
+// is NEVER exposed in this public file. The client just sends the question.
 
 const SUMMARY_SHEET = "Summary";
 const PODS = [
@@ -960,52 +958,16 @@ async function askGemini(question) {
   const answerEl = document.getElementById("aiAnswer");
   answerEl.hidden = false;
   answerEl.textContent = "Thinking…";
-
-  if (!GEMINI_API_KEY) {
-    answerEl.textContent =
-      "AI isn't enabled yet — add your Gemini API key to GEMINI_API_KEY in app.js to turn this on.";
-    return;
-  }
-  if (!summaryRowsCache) {
-    answerEl.textContent = "Summary data hasn't loaded yet — open the Overview first.";
-    return;
-  }
-
   try {
-    const body = {
-      system_instruction: {
-        parts: [
-          {
-            text:
-              "You are a collections analyst assistant for a debtors dashboard. Answer ONLY using the " +
-              "Summary data provided below. Amounts are in INR Lakhs unless stated otherwise. If the answer " +
-              "is not derivable from the data, say so plainly. Be concise; use short bullets for lists.",
-          },
-        ],
-      },
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: `Summary data (rows as JSON):\n${JSON.stringify(summaryRowsCache)}\n\nQuestion: ${question}` }],
-        },
-      ],
-    };
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
-    );
-    const json = await res.json();
-    if (!res.ok) throw new Error((json.error && json.error.message) || "HTTP " + res.status);
-    const parts = json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts;
-    answerEl.textContent = (parts ? parts.map((p) => p.text).join("") : "").trim() || "No answer returned.";
+    const data = await jsonpFetch(APPS_SCRIPT_URL, { key: APPS_SCRIPT_KEY, ai: question });
+    if (data && data.error) throw new Error(data.error);
+    answerEl.textContent = (data && data.answer ? data.answer : "").trim() || "No answer returned.";
   } catch (err) {
     answerEl.textContent = "AI error: " + (err && err.message ? err.message : err);
   }
 }
 
 function initAi() {
-  const note = document.getElementById("aiNote");
-  if (!GEMINI_API_KEY) note.textContent = "Enable by adding an API key in app.js";
   document.getElementById("aiForm").addEventListener("submit", (e) => {
     e.preventDefault();
     const q = document.getElementById("aiInput").value.trim();
