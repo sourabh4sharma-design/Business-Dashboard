@@ -41,7 +41,9 @@
     <div class="loading-card">
       <span class="spinner spinner-lg"></span>
       <div class="loading-pct" id="loadingPct">&nbsp;</div>
-      <div class="loading-label" id="loadingLabel">Loading data…</div>
+      <div class="loading-track"><div class="loading-fill" id="loadingFill"></div></div>
+      <div class="loading-label"><span id="loadingLabel">Loading data</span><span id="loadingDots" class="loading-dots"></span></div>
+      <div class="loading-note" id="loadingNote" hidden>Transaction-level data is large — thanks for your patience.</div>
     </div>
   </div>
   <div id="errorMsg" class="error-box" hidden></div>
@@ -95,6 +97,7 @@
 
   <!-- ===== POD detail ===== -->
   <section id="podView" class="view" hidden>
+    <h2 id="podHeading" class="pod-heading"></h2>
     <div id="podCards" class="kpi-row"></div>
     <div id="podSummary" class="pod-panels"></div>
     <div class="toolbar">

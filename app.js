@@ -97,6 +97,46 @@ function setBusy(on) {
   if (b) b.hidden = !on;
 }
 
+let dotsTimer = null;
+function startLoadingDots() {
+  const el = document.getElementById("loadingDots");
+  if (!el) return;
+  let n = 0;
+  if (dotsTimer) clearInterval(dotsTimer);
+  dotsTimer = setInterval(() => {
+    n = (n + 1) % 4;
+    el.textContent = ".".repeat(n);
+  }, 450);
+}
+function stopLoadingDots() {
+  if (dotsTimer) clearInterval(dotsTimer);
+  dotsTimer = null;
+  const el = document.getElementById("loadingDots");
+  if (el) el.textContent = "";
+}
+
+let pctAnimFrame = null;
+let pctDisplayed = 0;
+// Smoothly tweens the big loading percentage toward `target` instead of
+// snapping between chunk-completion jumps, so the number keeps moving.
+function animateLoadingPct(target) {
+  const el = document.getElementById("loadingPct");
+  if (!el) return;
+  if (pctAnimFrame) cancelAnimationFrame(pctAnimFrame);
+  const start = pctDisplayed;
+  const startTime = performance.now();
+  const duration = 500;
+  function step(now) {
+    const t = Math.min(1, (now - startTime) / duration);
+    const eased = 1 - Math.pow(1 - t, 2);
+    const val = Math.round(start + (target - start) * eased);
+    el.textContent = val + "%";
+    pctDisplayed = val;
+    if (t < 1) pctAnimFrame = requestAnimationFrame(step);
+  }
+  pctAnimFrame = requestAnimationFrame(step);
+}
+
 function setProgress(frac) {
   const bar = document.getElementById("loadBar");
   if (!bar) return;
@@ -843,6 +883,7 @@ function renderPodTable() {
 function renderPod(rows) {
   document.getElementById("overviewView").hidden = true;
   document.getElementById("podView").hidden = false;
+  document.getElementById("podHeading").textContent = PODS[currentPodIndex].label + " POD";
 
   if (!rows.length) throw new Error("This POD returned no data.");
   podColumns = rows[0].map((c) => (c || "").trim()).filter((c) => c !== "");
@@ -893,12 +934,14 @@ async function loadCurrent(opts = {}) {
   const seq = ++loadSeq;
   inFlight = true;
   const loadingEl = document.getElementById("loadingMsg");
-  const loadingPctEl = document.getElementById("loadingPct");
   const loadingLabelEl = document.getElementById("loadingLabel");
+  const loadingFillEl = document.getElementById("loadingFill");
+  const loadingNoteEl = document.getElementById("loadingNote");
   const errorEl = document.getElementById("errorMsg");
   const lastUpdatedEl = document.getElementById("lastUpdated");
 
-  const loadTitle = currentView === "overview" ? "Overview" : PODS[currentPodIndex].label;
+  const isPodLoad = currentView === "pod";
+  const loadTitle = isPodLoad ? PODS[currentPodIndex].label : "Overview";
 
   // First paint of a view shows the big centered card; after that we keep
   // the current content on screen and only show a small "busy" spinner, so a
@@ -909,9 +952,13 @@ async function loadCurrent(opts = {}) {
     if (firstPaint) {
       document.getElementById("overviewView").hidden = true;
       document.getElementById("podView").hidden = true;
-      loadingPctEl.textContent = "";
-      loadingLabelEl.textContent = "Loading " + loadTitle + "…";
+      pctDisplayed = 0;
+      document.getElementById("loadingPct").textContent = "";
+      loadingFillEl.style.width = "0%";
+      loadingLabelEl.textContent = "Loading " + loadTitle;
+      loadingNoteEl.hidden = !isPodLoad;
       loadingEl.hidden = false;
+      startLoadingDots();
     } else {
       setBusy(true);
     }
@@ -925,7 +972,8 @@ async function loadCurrent(opts = {}) {
         setProgress(frac);
         const pct = Math.round(frac * 100);
         if (firstPaint) {
-          loadingPctEl.textContent = pct + "%";
+          animateLoadingPct(pct);
+          loadingFillEl.style.width = pct + "%";
         } else {
           lastUpdatedEl.textContent = `Loading… ${pct}%`;
         }
@@ -963,6 +1011,7 @@ async function loadCurrent(opts = {}) {
         loadingEl.hidden = true;
         setBusy(false);
         setProgress(null);
+        stopLoadingDots();
       }
     }
   }
